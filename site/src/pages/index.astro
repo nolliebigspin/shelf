@@ -1,0 +1,622 @@
+---
+import "@fontsource-variable/bricolage-grotesque";
+import "@fontsource-variable/figtree";
+import { version, repoUrl, downloadUrl } from "../release";
+
+const clips = [
+  { name: "Harbour at dusk", time: "0:42", stars: 5, sky: "#f2a65a", ground: "#2b4a5e" },
+  { name: "A001_C014.mov", time: "1:08", stars: 0, sky: "#9fc4d6", ground: "#55733f" },
+  { name: "Ridge road, drone", time: "2:31", stars: 4, sky: "#cfd9e6", ground: "#6f6a5c" },
+  { name: "DJI_0412.mp4", time: "0:17", stars: 0, sky: "#f0d9a8", ground: "#a8693f" },
+  { name: "Market, handheld", time: "0:56", stars: 3, sky: "#d98f7a", ground: "#3d3348" },
+  { name: "GX010038.mp4", time: "3:04", stars: 0, sky: "#7fb7c9", ground: "#1f5a6b" },
+];
+
+const features = [
+  ["Browse everything at once", "Point Shelf at a folder or a whole drive. It finds every video and photo and shows each one as a thumbnail with its duration, resolution and codec."],
+  ["Name clips without renaming files", "Give a clip a name you will recognise. The file on the drive keeps the name your camera gave it."],
+  ["Tag and rate", "Add tags to one clip or fifty. Press 1 to 5 to rate the selection, 0 to clear."],
+  ["Group clips into albums", "Collect the shots for an edit in an album. A clip can sit in as many albums as you like; nothing is copied."],
+  ["Find it again", "Search by file name, your own name or a tag, and filter by rating."],
+  ["Hand clips to your editor", "Drag clips from Shelf straight into Final Cut, Premiere or Resolve. They link to the original files on the drive."],
+];
+---
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>Shelf, a media catalog for Mac that leaves your files alone</title>
+    <meta
+      name="description"
+      content="Shelf scans a folder or SSD, shows every clip as a thumbnail, and lets you name, tag, rate and group clips into albums. It never moves, renames or changes a file."
+    />
+  </head>
+  <body>
+    <header class="wrap top">
+      <a class="wordmark" href="/">Shelf</a>
+      <a href={repoUrl}>Source on GitHub</a>
+    </header>
+
+    <main>
+      <section class="wrap hero">
+        <h1>Your footage stays on the drive. Shelf keeps track of it.</h1>
+        <p class="lede">
+          Shelf is a Mac app that scans a folder or an SSD, shows every clip as a thumbnail, and lets
+          you name, tag, rate and group clips into albums. It never moves, renames or changes a file.
+        </p>
+        <div class="cta">
+          <a class="button" href={downloadUrl}>Download Shelf for Mac</a>
+          <p class="fine">Version {version}, for Apple Silicon Macs. Free. Needs ffmpeg, see <a href="#install">Install</a>.</p>
+        </div>
+      </section>
+
+      <section class="wrap demo" data-online="true" aria-labelledby="demo-title">
+        <div class="demo-head">
+          <h2 id="demo-title">Unplug the drive. The catalog stays.</h2>
+          <button class="eject" type="button" aria-pressed="false">Eject the drive</button>
+        </div>
+        <div class="shelf">
+          <ul class="clips">
+            {clips.map((c) => (
+              <li class="clip" style={`--sky:${c.sky};--ground:${c.ground}`}>
+                <div class="frame">
+                  <span class="badge offline">Offline</span>
+                  {c.stars > 0 && <span class="badge stars" aria-label={`${c.stars} stars`}>{"★".repeat(c.stars)}</span>}
+                  <span class="badge time">{c.time}</span>
+                </div>
+                <span class="clip-name">{c.name}</span>
+              </li>
+            ))}
+          </ul>
+          <div class="drive" aria-hidden="true"><span class="led"></span>SSD</div>
+          <div class="plank"></div>
+        </div>
+        <p class="demo-status" aria-live="polite">
+          <span class="when-online">Drive connected. Clips play in the app and drag into your editor.</span>
+          <span class="when-offline">Drive unplugged. Thumbnails, names, tags, ratings and albums are all still here, and you can keep organising. Playback returns when the drive does.</span>
+        </p>
+      </section>
+
+      <section class="wrap">
+        <h2>What you can do with it</h2>
+        <dl class="features">
+          {features.map(([title, text]) => (
+            <div>
+              <dt>{title}</dt>
+              <dd>{text}</dd>
+            </div>
+          ))}
+        </dl>
+      </section>
+
+      <section class="promise">
+        <div class="wrap">
+          <h2>What it will not do</h2>
+          <ul class="never">
+            <li><strong>Write to your drive.</strong> Shelf opens media read-only. It does not move, rename, delete or modify anything on a drive it scans.</li>
+            <li><strong>Leave files next to your footage.</strong> Thumbnails and the catalog live in the app's own folder on your Mac.</li>
+            <li><strong>Lose track when a drive is renamed.</strong> Shelf recognises a drive by its volume ID, so a new name or mount point changes nothing.</li>
+            <li><strong>Remove files.</strong> Taking a clip out of an album only changes the album.</li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="wrap" id="install">
+        <h2>Install</h2>
+        <ol class="steps">
+          <li>
+            <h3>Install ffmpeg</h3>
+            <p>Shelf uses ffmpeg to read metadata and make thumbnails. With <a href="https://brew.sh">Homebrew</a>, run this in Terminal:</p>
+            <pre><code>brew install ffmpeg</code></pre>
+          </li>
+          <li>
+            <h3>Download and copy</h3>
+            <p><a href={downloadUrl}>Download the disk image</a>, open it, and drag Shelf into Applications.</p>
+          </li>
+          <li>
+            <h3>Allow the first launch</h3>
+            <p>
+              Shelf is not signed with an Apple developer certificate, so macOS blocks it the first
+              time. Open System Settings, go to Privacy &amp; Security, and choose Open Anyway. If
+              macOS says the app is damaged, run this once in Terminal instead:
+            </p>
+            <pre><code>xattr -dr com.apple.quarantine /Applications/Shelf.app</code></pre>
+          </li>
+        </ol>
+        <p class="fine">Shelf plays H.264, HEVC and ProRes clips itself. Other formats open in your default player.</p>
+      </section>
+    </main>
+
+    <footer class="wrap bottom">
+      <span>Shelf {version}</span>
+      <a href={repoUrl}>Source on GitHub</a>
+      <a href={`${repoUrl}/issues`}>Report a problem</a>
+    </footer>
+
+    <script>
+      const demo = document.querySelector<HTMLElement>(".demo")!;
+      const button = demo.querySelector<HTMLButtonElement>(".eject")!;
+      button.addEventListener("click", () => {
+        const online = demo.dataset.online !== "true";
+        demo.dataset.online = String(online);
+        button.setAttribute("aria-pressed", String(!online));
+        button.textContent = online ? "Eject the drive" : "Plug it back in";
+      });
+    </script>
+  </body>
+</html>
+
+<style is:global>
+  :root {
+    --petrol: #10323a;
+    --petrol-deep: #0a2329;
+    --plywood: #d6aa6c;
+    --plywood-dark: #a97f48;
+    --chalk: #eef3f1;
+    --mist: #a9c0c2;
+    --online: #7fd6a4;
+    --offline: #f0b450;
+    --display: "Bricolage Grotesque Variable", system-ui, sans-serif;
+    --body: "Figtree Variable", system-ui, sans-serif;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    margin: 0;
+    background: var(--petrol);
+    color: var(--chalk);
+    font-family: var(--body);
+    font-size: 1.0625rem;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    width: min(100% - 2.5rem, 68rem);
+    margin-inline: auto;
+  }
+
+  a {
+    color: inherit;
+    text-underline-offset: 0.2em;
+    text-decoration-thickness: 1px;
+  }
+
+  a:hover {
+    color: var(--plywood);
+  }
+
+  :focus-visible {
+    outline: 3px solid var(--offline);
+    outline-offset: 3px;
+    border-radius: 4px;
+  }
+
+  h1,
+  h2,
+  h3 {
+    font-family: var(--display);
+    font-weight: 650;
+    line-height: 1.05;
+    margin: 0;
+    text-wrap: balance;
+  }
+
+  h1 {
+    font-size: clamp(2.6rem, 7vw, 5.25rem);
+    font-stretch: 85%;
+    letter-spacing: -0.02em;
+    max-width: 14ch;
+  }
+
+  h2 {
+    font-size: clamp(1.75rem, 3.6vw, 2.6rem);
+    font-stretch: 90%;
+    letter-spacing: -0.01em;
+  }
+
+  h3 {
+    font-size: 1.25rem;
+    line-height: 1.25;
+  }
+
+  main > section {
+    padding-block: clamp(3rem, 8vw, 6rem);
+  }
+
+  /* Top bar and footer */
+  .top,
+  .bottom {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1.75rem;
+    align-items: baseline;
+    padding-block: 1.5rem;
+    color: var(--mist);
+    font-size: 0.95rem;
+  }
+
+  .top {
+    justify-content: space-between;
+  }
+
+  .wordmark {
+    font-family: var(--display);
+    font-weight: 700;
+    font-size: 1.4rem;
+    color: var(--chalk);
+    text-decoration: none;
+    border-bottom: 5px solid var(--plywood);
+    line-height: 1.1;
+    padding-inline: 0.15em;
+  }
+
+  .bottom {
+    border-top: 1px solid rgb(255 255 255 / 0.12);
+    padding-block: 2rem 3rem;
+  }
+
+  /* Hero */
+  main > .hero {
+    padding-block: clamp(2.5rem, 7vw, 5rem) 0;
+  }
+
+  .lede {
+    max-width: 58ch;
+    margin: 1.75rem 0 0;
+    font-size: clamp(1.1rem, 1.6vw, 1.3rem);
+    color: var(--chalk);
+  }
+
+  .cta {
+    margin-top: 2.25rem;
+  }
+
+  .button {
+    display: inline-block;
+    background: var(--plywood);
+    color: var(--petrol-deep);
+    font-family: var(--display);
+    font-weight: 650;
+    font-size: 1.15rem;
+    text-decoration: none;
+    padding: 0.85rem 1.5rem;
+    border-radius: 6px;
+    border-bottom: 4px solid var(--plywood-dark);
+  }
+
+  .button:hover {
+    color: var(--petrol-deep);
+    background: #e3ba80;
+  }
+
+  .button:active {
+    transform: translateY(2px);
+    border-bottom-width: 2px;
+    margin-bottom: 2px;
+  }
+
+  .fine {
+    color: var(--mist);
+    font-size: 0.95rem;
+    max-width: 62ch;
+  }
+
+  /* The shelf */
+  .demo-head {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem 2rem;
+    align-items: end;
+    justify-content: space-between;
+    margin-bottom: 2.5rem;
+  }
+
+  .eject {
+    font: inherit;
+    font-weight: 600;
+    color: var(--chalk);
+    background: transparent;
+    border: 2px solid var(--chalk);
+    border-radius: 6px;
+    padding: 0.55rem 1.1rem;
+    cursor: pointer;
+  }
+
+  .eject:hover {
+    background: var(--chalk);
+    color: var(--petrol-deep);
+  }
+
+  .shelf {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: end;
+    column-gap: clamp(0.75rem, 2vw, 1.5rem);
+    padding-inline: clamp(0.5rem, 2vw, 1.5rem);
+  }
+
+  .clips {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: clamp(0.5rem, 1.4vw, 1rem);
+    list-style: none;
+    margin: 0;
+    padding: 0 0 0.6rem;
+  }
+
+  .clip {
+    min-width: 0;
+  }
+
+  .frame {
+    position: relative;
+    aspect-ratio: 16 / 9;
+    border-radius: 4px;
+    overflow: hidden;
+    /* A stand-in for footage: sky, a low sun, and ground. */
+    background:
+      radial-gradient(circle at 70% 58%, rgb(255 255 255 / 0.55) 0 6%, transparent 7%),
+      linear-gradient(to bottom, var(--sky) 0 58%, var(--ground) 58% 100%);
+    box-shadow: 0 0 0 1px rgb(0 0 0 / 0.35);
+    transition: filter 0.35s ease;
+  }
+
+  .badge {
+    position: absolute;
+    font-size: 0.68rem;
+    line-height: 1;
+    padding: 0.2rem 0.3rem;
+    border-radius: 3px;
+    background: rgb(0 0 0 / 0.7);
+    color: #fff;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .badge.time {
+    right: 4px;
+    bottom: 4px;
+  }
+
+  .badge.stars {
+    left: 4px;
+    bottom: 4px;
+    color: var(--offline);
+  }
+
+  .badge.offline {
+    left: 4px;
+    top: 4px;
+    color: var(--offline);
+    font-weight: 600;
+    opacity: 0;
+    transition: opacity 0.25s ease;
+  }
+
+  .clip-name {
+    display: block;
+    margin-top: 0.35rem;
+    font-size: 0.78rem;
+    line-height: 1.3;
+    color: var(--chalk);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .drive {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    margin-bottom: 0;
+    padding: 0.5rem 0.85rem 0.5rem 0.7rem;
+    background: #1c1f24;
+    color: #c9d1d6;
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    border-radius: 7px 7px 3px 3px;
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.14);
+    transition:
+      transform 0.45s cubic-bezier(0.5, 0, 0.2, 1),
+      opacity 0.3s ease;
+  }
+
+  .led {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--online);
+    box-shadow: 0 0 8px var(--online);
+  }
+
+  .plank {
+    grid-column: 1 / -1;
+    height: 22px;
+    margin-inline: calc(-1 * clamp(0.5rem, 2vw, 1.5rem));
+    border-radius: 2px;
+    /* Plywood: a face veneer on top, then the laminate layers of the edge. */
+    background:
+      linear-gradient(to bottom, #e6c088 0 4px, transparent 4px),
+      repeating-linear-gradient(to bottom, var(--plywood) 0 3px, var(--plywood-dark) 3px 5px);
+    box-shadow: 0 14px 22px -8px rgb(0 0 0 / 0.55);
+  }
+
+  .demo[data-online="false"] .frame {
+    filter: saturate(0.35) brightness(0.7);
+  }
+
+  .demo[data-online="false"] .badge.offline {
+    opacity: 1;
+  }
+
+  .demo[data-online="false"] .drive {
+    transform: translateY(-2.5rem) rotate(8deg);
+    opacity: 0;
+  }
+
+  .demo-status {
+    margin: 2rem 0 0;
+    max-width: 62ch;
+    min-height: 3.2em;
+    color: var(--chalk);
+  }
+
+  .demo[data-online="true"] .when-offline,
+  .demo[data-online="false"] .when-online {
+    display: none;
+  }
+
+  /* Features */
+  .features {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
+    gap: 2.25rem 3rem;
+    margin: 2.5rem 0 0;
+  }
+
+  .features dt {
+    font-family: var(--display);
+    font-weight: 650;
+    font-size: 1.2rem;
+    line-height: 1.25;
+    padding-top: 0.9rem;
+    border-top: 5px solid var(--plywood);
+  }
+
+  .features dd {
+    margin: 0.5rem 0 0;
+    color: var(--mist);
+  }
+
+  /* Promise */
+  main > .promise {
+    background: var(--petrol-deep);
+  }
+
+  .never {
+    list-style: none;
+    padding: 0;
+    margin: 2.5rem 0 0;
+    display: grid;
+    gap: 1.25rem;
+    max-width: 46rem;
+  }
+
+  .never li {
+    padding-left: 2.25rem;
+    position: relative;
+    color: var(--mist);
+  }
+
+  .never li::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 0.3em;
+    width: 1.15rem;
+    height: 1.15rem;
+    border: 2px solid var(--offline);
+    border-radius: 50%;
+    /* A "no entry" bar */
+    background: linear-gradient(var(--offline), var(--offline)) center / 60% 2px no-repeat;
+  }
+
+  .never strong {
+    color: var(--chalk);
+    font-weight: 600;
+  }
+
+  /* Install */
+  .steps {
+    list-style: none;
+    counter-reset: step;
+    padding: 0;
+    margin: 2.5rem 0 2rem;
+    display: grid;
+    gap: 2.25rem;
+    max-width: 46rem;
+  }
+
+  .steps li {
+    counter-increment: step;
+    display: grid;
+    grid-template-columns: 3rem 1fr;
+    column-gap: 0.5rem;
+  }
+
+  .steps li::before {
+    content: counter(step);
+    grid-row: 1 / span 4;
+    font-family: var(--display);
+    font-weight: 700;
+    font-size: 2.4rem;
+    line-height: 0.9;
+    color: var(--plywood);
+  }
+
+  .steps li > * {
+    grid-column: 2;
+    min-width: 0;
+  }
+
+  .steps p {
+    margin: 0.4rem 0 0;
+    color: var(--mist);
+  }
+
+  pre {
+    margin: 0.85rem 0 0;
+    padding: 0.8rem 1rem;
+    background: var(--petrol-deep);
+    border-radius: 6px;
+    overflow-x: auto;
+    font-size: 0.9rem;
+  }
+
+  code {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    color: var(--chalk);
+  }
+
+  @media (max-width: 46rem) {
+    .clips {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .clip:nth-child(n + 4) {
+      display: none;
+    }
+  }
+
+  @media (max-width: 30rem) {
+    .clips {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .clip:nth-child(n + 3) {
+      display: none;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+
+    .frame,
+    .badge.offline,
+    .drive {
+      transition: none;
+    }
+  }
+</style>

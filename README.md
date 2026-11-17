@@ -8,3 +8,12 @@ npm run tauri dev
 ```
 
 Needs ffmpeg from Homebrew (`brew install ffmpeg`).
+
+## Landing page
+
+The download page is an Astro site in [site/](site). To deploy it on Vercel, import this repository and set the Root Directory to `site`; the defaults work. The version and download link live in `site/src/release.ts`.
+
+```bash
+npm --prefix site install
+npm --prefix site run dev
+```
