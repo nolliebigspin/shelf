@@ -805,7 +805,9 @@ mod tests {
         assert_eq!(all[1].display_name.as_deref(), Some("Sunset hero"));
         assert_eq!(all[1].rating, 5);
         assert_eq!(all[1].tags, ["b-roll", "drone"]);
-        assert_eq!(all[1].path.as_deref(), Some("/Volumes/T7/a/beach_02.mov"));
+        // Joined with the platform's separator ('\\' on Windows).
+        let expected = Path::new("/Volumes/T7").join("a").join("beach_02.mov");
+        assert_eq!(all[1].path.as_deref(), Some(expected.to_string_lossy().as_ref()));
 
         let search = |q: &str| ids(&conn, AssetFilter { search: Some(q.into()), ..Default::default() });
         assert_eq!(search("BEACH"), [1, 2]); // file name
