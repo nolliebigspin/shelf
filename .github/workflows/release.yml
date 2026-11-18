@@ -52,3 +52,13 @@ jobs:
           releaseDraft: false
           prerelease: false
           args: --target universal-apple-darwin --bundles app,dmg
+
+      # Same disk image under a fixed name, so the website can link to
+      # releases/latest/download/Shelf_universal.dmg and always get the newest build.
+      - name: Upload version-less disk image
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          dmg=$(ls src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg | head -n 1)
+          cp "$dmg" Shelf_universal.dmg
+          gh release upload "${{ github.ref_name }}" Shelf_universal.dmg --clobber
