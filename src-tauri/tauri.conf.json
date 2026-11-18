@@ -40,6 +40,11 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "linux": {
+      "deb": {
+        "depends": ["ffmpeg"]
+      }
+    },
     "macOS": {
       "signingIdentity": "Developer ID Application: Alec Winter (74H6Q6Y6VF)",
       "hardenedRuntime": true,

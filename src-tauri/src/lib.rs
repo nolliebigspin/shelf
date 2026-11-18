@@ -45,7 +45,12 @@ pub fn run() {
             commands::trash_count,
             commands::delete_from_disk,
             commands::drag_icon,
-            commands::move_assets
+            commands::move_assets,
+            commands::rename_album,
+            commands::delete_album,
+            commands::rename_tag,
+            commands::delete_tag,
+            commands::reorder_sidebar
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

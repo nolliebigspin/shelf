@@ -1,19 +1,20 @@
 import { registerGhost, useDnd } from "./dnd";
+import { mod, revealLabel, trashKey } from "./platform";
 
 const SHORTCUTS: [string, string][] = [
   ["← → ↑ ↓", "Move between clips"],
   ["⇧ + arrows", "Extend the selection"],
-  ["⌘↑ / ⌘↓, Home / End", "First / last clip"],
-  ["⌘A", "Select all"],
+  [`${mod}↑ / ${mod}↓, Home / End`, "First / last clip"],
+  [`${mod}A`, "Select all"],
   ["Esc", "Deselect (or cancel a drag)"],
   ["Space", "Play / pause"],
   ["Return", "Rename the selected clip"],
   ["1 – 5, 0", "Rate, clear rating"],
-  ["⌘O", "Open externally"],
-  ["⌘R", "Reveal in Finder"],
-  ["⌘⌫", "Move to Trash (in the Trash: Put Back)"],
-  ["⌘F", "Search"],
-  ["⌘1 / ⌘2", "Grid / list layout"],
+  [`${mod}O`, "Open externally"],
+  [`${mod}R`, revealLabel],
+  [trashKey, "Move to Trash (in the Trash: Put Back)"],
+  [`${mod}F`, "Search"],
+  [`${mod}1 / ${mod}2`, "Grid / list layout"],
   ["?", "Show these shortcuts"],
 ];
 

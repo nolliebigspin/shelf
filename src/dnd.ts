@@ -6,7 +6,7 @@ import { create } from "zustand";
  * Everything inside the window is plain pointer events, hit-tested with the
  * webview's own coordinates (`elementFromPoint(clientX, clientY)`), so the drop
  * lands exactly under the cursor. Only when the pointer leaves the window does
- * the app hand over to a native macOS file drag (for Final Cut, Finder, …).
+ * the app hand over to a native file drag (for editors, Finder / Explorer, …).
  *
  * Drop targets mark themselves in the DOM:
  * - `data-drop="album:<id>"` / `data-drop="trash"` on sidebar items
@@ -99,7 +99,7 @@ function hitTest(x: number, y: number, ids: number[], config: DragConfig): DropT
 }
 
 /** Swallow the click that follows a drag so it doesn't change the selection. */
-function suppressNextClick() {
+export function suppressNextClick() {
   const stop = (e: MouseEvent) => {
     e.stopPropagation();
     e.preventDefault();

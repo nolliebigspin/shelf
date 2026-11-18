@@ -4,6 +4,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import type { Asset, SortKey } from "./api";
 import { trackPointer, useDnd, type DragConfig } from "./dnd";
 import { formatBytes, formatDate, formatDuration } from "./format";
+import { primary } from "./platform";
 import { useSelection } from "./store";
 
 const MIN_CARD = 190; // px, cards stretch to fill the row
@@ -60,7 +61,7 @@ function useItemHandlers(
     useSelection.getState().click(
       id,
       assetsRef.current.map((a) => a.id),
-      { meta: e.metaKey, shift: e.shiftKey },
+      { meta: primary(e), shift: e.shiftKey },
     );
   }, []);
 

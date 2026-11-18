@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import type { Album, Asset } from "./api";
 import { formatBytes, formatDate, formatDuration } from "./format";
+import { editors, fileManager, revealLabel, trashKey } from "./platform";
 
 export interface InspectorActions {
   rename: (id: number, name: string) => void;
@@ -187,7 +188,7 @@ export function Inspector({
               onClick={() => actions.reveal(single.id)}
               className="flex-1 h-7 rounded border border-neutral-700 px-2 text-neutral-200 hover:bg-neutral-800 disabled:text-neutral-600 disabled:hover:bg-transparent"
             >
-              Reveal in Finder
+              {revealLabel}
             </button>
             <button
               disabled={!available}
@@ -200,7 +201,7 @@ export function Inspector({
           {!inTrash && (
             <p className="-mt-2 text-[11px] leading-snug text-neutral-500">
               Drag clips onto an album or the Trash, between clips to rearrange (Sort: Custom), or out of
-              the window into Final Cut, Premiere, Resolve or Finder (the original file, never a copy).
+              the window into {editors} or {fileManager} (the original file, never a copy).
             </p>
           )}
           <section>
@@ -293,7 +294,7 @@ export function Inspector({
         )}
         <button
           onClick={actions.trash}
-          title="Hide in Shelf’s Trash. Nothing changes on the drive. (⌘⌫)"
+          title={`Hide in Shelf’s Trash. Nothing changes on the drive. (${trashKey})`}
           className="mt-2 w-full h-7 rounded border border-neutral-700 px-2 text-neutral-300 hover:bg-neutral-800"
         >
           Move to Trash

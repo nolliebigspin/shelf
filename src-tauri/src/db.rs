@@ -18,7 +18,8 @@ CREATE TABLE IF NOT EXISTS volumes (
   uuid        TEXT NOT NULL UNIQUE,   -- VolumeUUID from diskutil
   label       TEXT NOT NULL,          -- last seen drive name
   mount_path  TEXT,                   -- e.g. /Volumes/T7, NULL when unplugged
-  last_seen_at INTEGER
+  last_seen_at INTEGER,
+  position    INTEGER                 -- your order in the sidebar, NULL = after, by name
 );
 
 CREATE TABLE IF NOT EXISTS assets (
@@ -42,9 +43,10 @@ CREATE TABLE IF NOT EXISTS assets (
   UNIQUE(volume_id, rel_path)
 );
 
-CREATE TABLE IF NOT EXISTS tags        (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE);
+CREATE TABLE IF NOT EXISTS tags        (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, position INTEGER);
 CREATE TABLE IF NOT EXISTS asset_tags  (asset_id INTEGER, tag_id INTEGER, PRIMARY KEY (asset_id, tag_id));
-CREATE TABLE IF NOT EXISTS albums      (id INTEGER PRIMARY KEY, name TEXT NOT NULL, created_at INTEGER);
+CREATE TABLE IF NOT EXISTS albums      (id INTEGER PRIMARY KEY, name TEXT NOT NULL, created_at INTEGER,
+                                        position INTEGER);
 CREATE TABLE IF NOT EXISTS album_items (album_id INTEGER, asset_id INTEGER, position INTEGER,
                                         PRIMARY KEY (album_id, asset_id));
 
@@ -127,19 +129,57 @@ pub fn open(app_data: &Path) -> Result<Db, String> {
 
 /// Bring catalogs created by older versions up to the current SCHEMA.
 pub fn migrate(conn: &Connection) -> Result<(), String> {
-    let has_trashed: bool = conn
-        .query_row(
-            "SELECT count(*) FROM pragma_table_info('assets') WHERE name = 'trashed_at'",
-            [],
-            |r| r.get::<_, i64>(0),
-        )
-        .map_err(|e| e.to_string())?
-        > 0;
-    if !has_trashed {
-        conn.execute_batch("ALTER TABLE assets ADD COLUMN trashed_at INTEGER")
-            .map_err(|e| e.to_string())?;
+    for (table, column) in [
+        ("assets", "trashed_at"),
+        ("albums", "position"),
+        ("tags", "position"),
+        ("volumes", "position"),
+    ] {
+        let exists: bool = conn
+            .query_row(
+                "SELECT count(*) FROM pragma_table_info(?1) WHERE name = ?2",
+                [table, column],
+                |r| r.get::<_, i64>(0),
+            )
+            .map_err(|e| e.to_string())?
+            > 0;
+        if !exists {
+            conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} INTEGER"))
+                .map_err(|e| e.to_string())?;
+        }
     }
     Ok(())
+}
+
+/// The sidebar lists you can sort by hand.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SidebarList {
+    Albums,
+    Tags,
+    Volumes,
+}
+
+/// Store a hand-arranged order for albums, tags or drives (`ids` top to bottom).
+/// Anything not listed keeps no position and sorts after, by name.
+pub fn reorder(conn: &mut Connection, list: SidebarList, ids: &[i64]) -> Result<(), String> {
+    let table = match list {
+        SidebarList::Albums => "albums",
+        SidebarList::Tags => "tags",
+        SidebarList::Volumes => "volumes",
+    };
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    tx.execute(&format!("UPDATE {table} SET position = NULL"), [])
+        .map_err(|e| e.to_string())?;
+    {
+        let mut stmt = tx
+            .prepare(&format!("UPDATE {table} SET position = ?1 WHERE id = ?2"))
+            .map_err(|e| e.to_string())?;
+        for (i, id) in ids.iter().enumerate() {
+            stmt.execute(params![i as i64 + 1, id]).map_err(|e| e.to_string())?;
+        }
+    }
+    tx.commit().map_err(|e| e.to_string())
 }
 
 #[derive(Debug, Serialize)]
@@ -300,7 +340,7 @@ pub fn list_assets(conn: &Connection, filter: &AssetFilter) -> Result<Vec<Asset>
             let mount_path: Option<String> = r.get(15)?;
             let path = mount_path
                 .as_ref()
-                .map(|m| Path::new(m).join(&rel_path).to_string_lossy().into_owned());
+                .map(|m| crate::volumes::resolve(m, &rel_path).to_string_lossy().into_owned());
             let tags: Option<String> = r.get(17)?;
             Ok(Asset {
                 id: r.get(0)?,
@@ -343,7 +383,7 @@ pub fn asset_path(conn: &Connection, id: i64) -> Result<PathBuf, String> {
         )
         .map_err(|e| e.to_string())?;
     let mount = mount.ok_or("This clip's drive is offline.")?;
-    let path = Path::new(&mount).join(rel);
+    let path = crate::volumes::resolve(&mount, &rel);
     if !path.exists() {
         return Err(format!("{} is no longer there.", path.display()));
     }
@@ -434,7 +474,7 @@ pub fn list_tags(conn: &Connection) -> Result<Vec<Tag>, String> {
             "SELECT t.id, t.name,
                     (SELECT count(*) FROM asset_tags x JOIN assets a ON a.id = x.asset_id
                      WHERE x.tag_id = t.id AND a.trashed_at IS NULL)
-             FROM tags t ORDER BY t.name",
+             FROM tags t ORDER BY t.position IS NULL, t.position, t.name",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
@@ -463,7 +503,7 @@ pub fn list_albums(conn: &Connection) -> Result<Vec<Album>, String> {
             "SELECT b.id, b.name, b.created_at,
                     (SELECT count(*) FROM album_items i JOIN assets a ON a.id = i.asset_id
                      WHERE i.album_id = b.id AND a.trashed_at IS NULL)
-             FROM albums b ORDER BY b.name COLLATE NOCASE",
+             FROM albums b ORDER BY b.position IS NULL, b.position, b.name COLLATE NOCASE",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
@@ -522,6 +562,80 @@ pub fn remove_from_album(conn: &mut Connection, album_id: i64, asset_ids: &[i64]
         )
         .map_err(|e| e.to_string())?;
     }
+    tx.commit().map_err(|e| e.to_string())
+}
+
+pub fn rename_album(conn: &Connection, album_id: i64, name: &str) -> Result<(), String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("An album needs a name.".into());
+    }
+    conn.execute("UPDATE albums SET name = ?1 WHERE id = ?2", params![name, album_id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Delete an album. Its clips stay in the catalog (and on the drive).
+pub fn delete_album(conn: &mut Connection, album_id: i64) -> Result<(), String> {
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM album_items WHERE album_id = ?1", [album_id])
+        .map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM albums WHERE id = ?1", [album_id])
+        .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())
+}
+
+/// Rename a tag on every clip. Renaming onto an existing tag merges the two.
+pub fn rename_tag(conn: &mut Connection, old: &str, new: &str) -> Result<(), String> {
+    let (old, new) = (normalize_tag(old), normalize_tag(new));
+    if new.is_empty() {
+        return Err("A tag needs a name.".into());
+    }
+    if old == new {
+        return Ok(());
+    }
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let old_id: Option<i64> = tx
+        .query_row("SELECT id FROM tags WHERE name = ?1", [&old], |r| r.get(0))
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let Some(old_id) = old_id else { return Ok(()) };
+    let new_id: Option<i64> = tx
+        .query_row("SELECT id FROM tags WHERE name = ?1", [&new], |r| r.get(0))
+        .optional()
+        .map_err(|e| e.to_string())?;
+    match new_id {
+        None => {
+            tx.execute("UPDATE tags SET name = ?1 WHERE id = ?2", params![new, old_id])
+                .map_err(|e| e.to_string())?;
+        }
+        Some(new_id) => {
+            tx.execute(
+                "INSERT OR IGNORE INTO asset_tags (asset_id, tag_id)
+                 SELECT asset_id, ?1 FROM asset_tags WHERE tag_id = ?2",
+                params![new_id, old_id],
+            )
+            .map_err(|e| e.to_string())?;
+            tx.execute("DELETE FROM asset_tags WHERE tag_id = ?1", [old_id])
+                .map_err(|e| e.to_string())?;
+            tx.execute("DELETE FROM tags WHERE id = ?1", [old_id])
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    tx.commit().map_err(|e| e.to_string())
+}
+
+/// Remove a tag from every clip and forget it.
+pub fn delete_tag(conn: &mut Connection, name: &str) -> Result<(), String> {
+    let name = normalize_tag(name);
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    tx.execute(
+        "DELETE FROM asset_tags WHERE tag_id IN (SELECT id FROM tags WHERE name = ?1)",
+        [&name],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM tags WHERE name = ?1", [&name])
+        .map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())
 }
 
@@ -775,12 +889,74 @@ mod tests {
     #[test]
     fn migrate_adds_trashed_at_to_old_catalogs() {
         let conn = Connection::open_in_memory().unwrap();
-        let old = SCHEMA.replace("  trashed_at   INTEGER,               -- set while the clip is in Shelf's Trash\n", "");
-        assert_ne!(old, SCHEMA);
+        let old = SCHEMA
+            .replace("  trashed_at   INTEGER,               -- set while the clip is in Shelf's Trash\n", "")
+            .replace(",\n  position    INTEGER                 -- your order in the sidebar, NULL = after, by name", "")
+            .replace(", position INTEGER);", ");")
+            .replace(",\n                                        position INTEGER);", ");");
+        assert!(!old.contains("trashed_at") && !old.contains("position    INTEGER"));
         conn.execute_batch(&old).unwrap();
         migrate(&conn).unwrap();
         migrate(&conn).unwrap();
-        conn.execute_batch("SELECT trashed_at FROM assets").unwrap();
+        conn.execute_batch(
+            "SELECT trashed_at FROM assets; SELECT position FROM albums;
+             SELECT position FROM tags; SELECT position FROM volumes;",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn rename_and_delete_albums_and_tags() {
+        let mut conn = catalog();
+        let album = create_album(&conn, "Reel", 0).unwrap();
+        add_to_album(&mut conn, album, &[1, 2]).unwrap();
+        rename_album(&conn, album, "  Showreel ").unwrap();
+        assert!(rename_album(&conn, album, " ").is_err());
+        assert_eq!(list_albums(&conn).unwrap()[0].name, "Showreel");
+        delete_album(&mut conn, album).unwrap();
+        assert!(list_albums(&conn).unwrap().is_empty());
+        assert_eq!(ids(&conn, AssetFilter::default()), [1, 2, 3]); // clips stay
+        let n: i64 = conn.query_row("SELECT count(*) FROM album_items", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 0);
+
+        set_tags(&mut conn, &[1, 2], &["drone".into()], true).unwrap();
+        set_tags(&mut conn, &[2, 3], &["aerial".into()], true).unwrap();
+        rename_tag(&mut conn, "Drone", "Sky Shots").unwrap();
+        let tags = |conn: &Connection| -> Vec<(String, i64)> {
+            list_tags(conn).unwrap().into_iter().map(|t| (t.name, t.asset_count)).collect()
+        };
+        assert_eq!(tags(&conn), [("aerial".into(), 2), ("sky shots".into(), 2)]);
+        rename_tag(&mut conn, "sky shots", "Aerial").unwrap(); // merges, no duplicates
+        assert_eq!(tags(&conn), [("aerial".into(), 3)]);
+        assert!(rename_tag(&mut conn, "aerial", "  ").is_err());
+        delete_tag(&mut conn, "AERIAL").unwrap();
+        assert!(tags(&conn).is_empty());
+        assert!(list_assets(&conn, &AssetFilter::default()).unwrap().iter().all(|a| a.tags.is_empty()));
+    }
+
+    #[test]
+    fn sidebar_lists_keep_a_hand_arranged_order() {
+        let mut conn = catalog();
+        let a = create_album(&conn, "Alpha", 0).unwrap();
+        let b = create_album(&conn, "Beta", 0).unwrap();
+        let c = create_album(&conn, "Gamma", 0).unwrap();
+        let names = |conn: &Connection| -> Vec<String> { list_albums(conn).unwrap().into_iter().map(|a| a.name).collect() };
+        assert_eq!(names(&conn), ["Alpha", "Beta", "Gamma"]);
+        reorder(&mut conn, SidebarList::Albums, &[c, a, b]).unwrap();
+        assert_eq!(names(&conn), ["Gamma", "Alpha", "Beta"]);
+        create_album(&conn, "Delta", 0).unwrap(); // new ones come after, by name
+        assert_eq!(names(&conn), ["Gamma", "Alpha", "Beta", "Delta"]);
+
+        set_tags(&mut conn, &[1], &["one".into(), "two".into()], true).unwrap();
+        let tags = list_tags(&conn).unwrap();
+        reorder(&mut conn, SidebarList::Tags, &[tags[1].id, tags[0].id]).unwrap();
+        let names: Vec<String> = list_tags(&conn).unwrap().into_iter().map(|t| t.name).collect();
+        assert_eq!(names, ["two", "one"]);
+
+        conn.execute("INSERT INTO volumes (id, uuid, label) VALUES (2, 'u2', 'A-drive')", []).unwrap();
+        assert_eq!(crate::volumes::list(&conn).unwrap()[0].label, "A-drive");
+        reorder(&mut conn, SidebarList::Volumes, &[1, 2]).unwrap();
+        assert_eq!(crate::volumes::list(&conn).unwrap()[0].label, "T7");
     }
 
     #[test]

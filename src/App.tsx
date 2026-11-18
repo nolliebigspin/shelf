@@ -7,7 +7,9 @@ import {
   addToAlbum,
   appStatus,
   createAlbum,
+  deleteAlbum,
   deleteFromDisk,
+  deleteTag,
   dragIcon,
   listAlbums,
   listAssets,
@@ -16,6 +18,9 @@ import {
   openExternal,
   refreshVolumes,
   removeFromAlbum,
+  renameAlbum,
+  renameTag,
+  reorderSidebar,
   rescan,
   restoreAssets,
   reveal,
@@ -30,6 +35,7 @@ import {
   type DeleteReport,
   type OrderScope,
   type ScanProgress,
+  type SidebarList,
   type SortKey,
   type Tag,
   type Volume,
@@ -39,8 +45,10 @@ import { useDnd, type DragConfig, type DropTarget } from "./dnd";
 import { formatBytes } from "./format";
 import { Inspector, type InspectorActions } from "./Inspector";
 import { clamp, ResizeHandle, usePanelWidth, useWindowWidth } from "./ResizeHandle";
-import { showClipMenu } from "./contextMenu";
+import { showClipMenu, showMenu } from "./contextMenu";
+import { trackSidebarSort, useSidebarSort } from "./sortable";
 import { useSelection } from "./store";
+import { primary, systemTrash, trashKey } from "./platform";
 import { DragGhost, ShortcutsHelp } from "./Overlays";
 import {
   defaultSort,
@@ -115,15 +123,24 @@ function SidebarItem({
   onClick,
   title,
   drop,
+  sort,
+  onContextMenu,
   children,
 }: {
   active: boolean;
   onClick: () => void;
+  onContextMenu?: () => void;
   title?: string;
   /** Makes the item a drop target for clips dragged from the grid. */
   drop?: { id: string; dragging: boolean; hovered: boolean };
+  /** Lets the item be dragged to a new place in its list. */
+  sort?: { list: SidebarList; id: number; order: () => number[]; onDrop: (ids: number[]) => void };
   children: React.ReactNode;
 }) {
+  const insertSide = useSidebarSort((st) =>
+    sort && st.list === sort.list && st.overId === sort.id ? st.side : null,
+  );
+  const lifted = useSidebarSort((st) => !!sort && st.list === sort.list && st.dragId === sort.id);
   const dropStyle = !drop?.dragging
     ? ""
     : drop.hovered
@@ -132,12 +149,30 @@ function SidebarItem({
   return (
     <button
       onClick={onClick}
+      onContextMenu={
+        onContextMenu &&
+        ((e) => {
+          e.preventDefault();
+          onContextMenu();
+        })
+      }
+      onPointerDown={sort && ((e) => trackSidebarSort(e, sort.list, sort.id, sort.order, sort.onDrop))}
       title={title}
       data-drop={drop?.id}
-      className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left hover:bg-neutral-800 ${
+      data-sort-list={sort?.list}
+      data-sort-id={sort?.id}
+      className={`relative flex w-full items-center gap-2 rounded px-2 py-1 text-left hover:bg-neutral-800 ${
         active ? "bg-neutral-800 text-neutral-100" : ""
-      } ${dropStyle}`}
+      } ${dropStyle} ${lifted ? "opacity-40" : ""}`}
     >
+      {insertSide && (
+        <span
+          aria-hidden
+          className={`pointer-events-none absolute inset-x-1 h-[2px] rounded-full bg-sky-400 ${
+            insertSide === "before" ? "-top-px" : "-bottom-px"
+          }`}
+        />
+      )}
       {children}
     </button>
   );
@@ -148,6 +183,39 @@ function SidebarHeading({ children }: { children: React.ReactNode }) {
     <h2 className="mb-1 px-2 text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
       {children}
     </h2>
+  );
+}
+
+/** Inline text field for naming an album or tag in the sidebar. */
+function NameInput({
+  initial,
+  placeholder,
+  onDone,
+}: {
+  initial: string;
+  placeholder: string;
+  /** null when cancelled with Escape. */
+  onDone: (name: string | null) => void;
+}) {
+  const [value, setValue] = useState(initial);
+  const cancelled = useRef(false);
+  return (
+    <input
+      autoFocus
+      value={value}
+      placeholder={placeholder}
+      onFocus={(e) => e.currentTarget.select()}
+      onChange={(e) => setValue(e.target.value)}
+      onBlur={() => onDone(cancelled.current ? null : value)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") e.currentTarget.blur();
+        if (e.key === "Escape") {
+          cancelled.current = true;
+          e.currentTarget.blur();
+        }
+      }}
+      className="mt-0.5 h-7 w-full rounded border border-sky-500 bg-neutral-950 px-2 text-neutral-100 outline-none select-text"
+    />
   );
 }
 
@@ -177,6 +245,9 @@ export default function App() {
   const [search, setSearch] = useState("");
   const [minRating, setMinRating] = useState(0);
   const [newAlbum, setNewAlbum] = useState<string | null>(null);
+  const [renaming, setRenaming] = useState<{ kind: "album"; id: number } | { kind: "tag"; name: string } | null>(
+    null,
+  );
   const selected = useSelection((s) => s.selected);
   const [layout, setLayoutState] = useState<Layout>(() =>
     readJson<Layout>("shelf.layout", "grid") === "list" ? "list" : "grid",
@@ -357,7 +428,7 @@ export default function App() {
       const files = reachable.length === 1 ? "1 file" : `${reachable.length.toLocaleString()} files`;
       const ok = await ask(
         `Permanently delete ${files} (${formatBytes(bytes)}) from your drives?\n\n` +
-          "They will not go to the Finder Trash. This cannot be undone." +
+          `They will not go to ${systemTrash}. This cannot be undone.` +
           (offline > 0 ? `\n\n${offline.toLocaleString()} on offline drives will be skipped.` : ""),
         { title: "Delete from Drive", kind: "warning", okLabel: "Delete Permanently", cancelLabel: "Cancel" },
       );
@@ -459,7 +530,7 @@ export default function App() {
     }
   };
 
-  /** Hand the drag to macOS once the pointer leaves the window, for editors and Finder. */
+  /** Hand over to a native file drag once the pointer leaves the window, for editors and the file manager. */
   const dragOut = async (ids: number[]) => {
     const wanted = new Set(ids);
     const files = assetsRef.current.filter((a) => wanted.has(a.id) && a.online && !a.missing && a.path);
@@ -469,7 +540,7 @@ export default function App() {
     }
     const icon = await dragIcon(files.map((a) => a.id)).catch(() => files.find((a) => a.thumb_path)?.thumb_path);
     if (!icon) return;
-    // "copy" so a drop onto Finder can never move the original off the drive.
+    // "copy" so a drop onto the file manager can never move the original off the drive.
     startDrag({ item: files.map((a) => a.path!), icon, mode: "copy" }).catch((e) => setNotice(String(e)));
   };
 
@@ -492,6 +563,82 @@ export default function App() {
     onLeaveWindow: (ids) => void dragOut(ids),
   };
 
+  // Albums and tags: right-click in the sidebar to rename or delete. Deleting never
+  // touches the clips themselves.
+  const albumMenu = (album: Album) =>
+    showMenu([
+      { text: "Rename…", action: () => setRenaming({ kind: "album", id: album.id }) },
+      {
+        text: "Delete Album…",
+        action: async () => {
+          const clips = album.asset_count === 1 ? "Its clip stays" : `Its ${album.asset_count.toLocaleString()} clips stay`;
+          const ok = await ask(`Delete the album “${album.name}”?\n\n${clips} in Shelf and on your drive.`, {
+            title: "Delete Album",
+            kind: "warning",
+            okLabel: "Delete Album",
+            cancelLabel: "Cancel",
+          });
+          if (!ok) return;
+          if (view.kind === "album" && view.id === album.id) setView({ kind: "all" });
+          mutate(() => deleteAlbum(album.id));
+        },
+      },
+    ]).catch((e) => setNotice(String(e)));
+
+  const tagMenu = (tag: Tag) =>
+    showMenu([
+      { text: "Rename…", action: () => setRenaming({ kind: "tag", name: tag.name }) },
+      {
+        text: "Delete Tag…",
+        action: async () => {
+          const clips = tag.asset_count === 1 ? "1 clip" : `${tag.asset_count.toLocaleString()} clips`;
+          const ok = await ask(`Remove the tag “${tag.name}” from ${clips}?\n\nThe clips themselves stay.`, {
+            title: "Delete Tag",
+            kind: "warning",
+            okLabel: "Delete Tag",
+            cancelLabel: "Cancel",
+          });
+          if (!ok) return;
+          if (view.kind === "tag" && view.name === tag.name) setView({ kind: "all" });
+          mutate(() => deleteTag(tag.name));
+        },
+      },
+    ]).catch((e) => setNotice(String(e)));
+
+  /** Drag to sort albums, tags and drives: show the new order at once, then save it. */
+  const sortProps = (list: SidebarList, id: number) => ({
+    list,
+    id,
+    order: () =>
+      (list === "albums" ? albums : list === "tags" ? tags : volumes).map((x) => x.id),
+    onDrop: (ids: number[]) => {
+      const byOrder = <T extends { id: number }>(rows: T[]) =>
+        [...rows].sort((a, b) => ids.indexOf(a.id) - ids.indexOf(b.id));
+      if (list === "albums") setAlbums(byOrder);
+      else if (list === "tags") setTagList(byOrder);
+      else setVolumes(byOrder);
+      reorderSidebar(list, ids).then(
+        () => (list === "volumes" ? loadVolumes() : loadSidebar()),
+        (e) => setNotice(String(e)),
+      );
+    },
+  });
+
+  const finishRename = (name: string | null) => {
+    const target = renaming;
+    setRenaming(null);
+    if (!target || name === null || !name.trim()) return;
+    if (target.kind === "album") {
+      mutate(() => renameAlbum(target.id, name));
+    } else {
+      // Tags are stored trimmed and lower-cased, like the backend's normalize_tag.
+      const next = name.trim().split(/\s+/).join(" ").toLowerCase();
+      if (next === target.name) return;
+      if (view.kind === "tag" && view.name === target.name) setView({ kind: "tag", name: next });
+      mutate(() => renameTag(target.name, next));
+    }
+  };
+
   const submitNewAlbum = () => {
     const name = (newAlbum ?? "").trim();
     setNewAlbum(null);
@@ -505,7 +652,8 @@ export default function App() {
   };
 
   // Keyboard shortcuts (listed in SHORTCUTS / the "?" overlay). Ignored while typing.
-  // ⌘⌫ never deletes from a drive: it trashes, or puts back inside the Trash.
+  // ⌘⌫ / Ctrl+Backspace / Delete never delete from a drive: they trash, or put back inside the Trash.
+  // ⌘ on macOS is Ctrl on Windows and Linux (see platform.ts).
   const [showKeys, setShowKeys] = useState(false);
   const keyState = useRef({ inTrash, layout, showKeys, actions });
   keyState.current = { inTrash, layout, showKeys, actions };
@@ -535,7 +683,7 @@ export default function App() {
       }
       if (e.key in arrows && !e.altKey && !e.ctrlKey) {
         let delta = arrows[e.key];
-        if (e.metaKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) delta = e.key === "ArrowUp" ? -Infinity : Infinity;
+        if (primary(e) && (e.key === "ArrowUp" || e.key === "ArrowDown")) delta = e.key === "ArrowUp" ? -Infinity : Infinity;
         if (delta === 0) return;
         e.preventDefault();
         if (el?.tagName === "BUTTON") el.blur();
@@ -543,27 +691,27 @@ export default function App() {
       } else if (e.key === "?") {
         e.preventDefault();
         setShowKeys(true);
-      } else if (e.key === "Enter" && !e.metaKey && single) {
+      } else if (e.key === "Enter" && !primary(e) && single) {
         if (el?.tagName === "BUTTON") return; // Return activates a focused button as usual
         e.preventDefault();
         const field = document.getElementById("display-name") as HTMLInputElement | null;
         field?.focus();
         field?.select();
-      } else if (e.metaKey && key === "o") {
+      } else if (primary(e) && key === "o") {
         e.preventDefault();
         if (single?.online && !single.missing) actions.openExternal(single.id);
-      } else if (e.metaKey && key === "r") {
+      } else if (primary(e) && key === "r") {
         e.preventDefault();
         if (single?.online && !single.missing) actions.reveal(single.id);
-      } else if (e.metaKey && key === "f") {
+      } else if (primary(e) && key === "f") {
         e.preventDefault();
         const search = document.getElementById("search") as HTMLInputElement | null;
         search?.focus();
         search?.select();
-      } else if (e.metaKey && (e.key === "1" || e.key === "2")) {
+      } else if (primary(e) && (e.key === "1" || e.key === "2")) {
         e.preventDefault();
         setLayout(e.key === "1" ? "grid" : "list");
-      } else if (e.metaKey && key === "a") {
+      } else if (primary(e) && key === "a") {
         e.preventDefault();
         useSelection.getState().selectAll(assetsRef.current.map((a) => a.id));
       } else if (e.key === " ") {
@@ -576,7 +724,7 @@ export default function App() {
         else player.pause();
       } else if (e.key === "Escape") {
         useSelection.getState().clear();
-      } else if ((e.key === "Backspace" && e.metaKey) || e.key === "Delete") {
+      } else if ((e.key === "Backspace" && primary(e)) || e.key === "Delete") {
         e.preventDefault();
         if (sel.selected.size === 0) return;
         if (inTrash) actions.restore();
@@ -623,6 +771,7 @@ export default function App() {
                   <div className="min-w-0 flex-1">
                     <SidebarItem
                       active={view.kind === "volume" && view.id === v.id}
+                      sort={sortProps("volumes", v.id)}
                       onClick={() => setView({ kind: "volume", id: v.id })}
                       title={v.mount_path ?? "Offline"}
                     >
@@ -659,17 +808,24 @@ export default function App() {
 
           <section>
             <SidebarHeading>Albums</SidebarHeading>
-            {albums.map((a) => (
-              <SidebarItem
-                key={a.id}
-                active={view.kind === "album" && view.id === a.id}
-                onClick={() => setView({ kind: "album", id: a.id })}
-                drop={dropProps(`album:${a.id}`)}
-              >
-                <span className="truncate">{a.name}</span>
-                <Count>{a.asset_count.toLocaleString()}</Count>
-              </SidebarItem>
-            ))}
+            {albums.map((a) =>
+              renaming?.kind === "album" && renaming.id === a.id ? (
+                <NameInput key={a.id} initial={a.name} placeholder="Album name" onDone={finishRename} />
+              ) : (
+                <SidebarItem
+                  key={a.id}
+                  active={view.kind === "album" && view.id === a.id}
+                  sort={sortProps("albums", a.id)}
+                  onClick={() => setView({ kind: "album", id: a.id })}
+                  onContextMenu={() => albumMenu(a)}
+                  title="Drag to reorder · right-click to rename or delete"
+                  drop={dropProps(`album:${a.id}`)}
+                >
+                  <span className="truncate">{a.name}</span>
+                  <Count>{a.asset_count.toLocaleString()}</Count>
+                </SidebarItem>
+              ),
+            )}
             {newAlbum === null ? (
               <button
                 onClick={() => setNewAlbum("")}
@@ -697,16 +853,23 @@ export default function App() {
           <section>
             <SidebarHeading>Tags</SidebarHeading>
             {tags.length === 0 && <div className="px-2 text-neutral-600">No tags yet</div>}
-            {tags.map((t) => (
-              <SidebarItem
-                key={t.id}
-                active={view.kind === "tag" && view.name === t.name}
-                onClick={() => setView({ kind: "tag", name: t.name })}
-              >
-                <span className="truncate">{t.name}</span>
-                <Count>{t.asset_count.toLocaleString()}</Count>
-              </SidebarItem>
-            ))}
+            {tags.map((t) =>
+              renaming?.kind === "tag" && renaming.name === t.name ? (
+                <NameInput key={t.id} initial={t.name} placeholder="Tag name" onDone={finishRename} />
+              ) : (
+                <SidebarItem
+                  key={t.id}
+                  active={view.kind === "tag" && view.name === t.name}
+                  sort={sortProps("tags", t.id)}
+                  onClick={() => setView({ kind: "tag", name: t.name })}
+                  onContextMenu={() => tagMenu(t)}
+                  title="Drag to reorder · right-click to rename or delete"
+                >
+                  <span className="truncate">{t.name}</span>
+                  <Count>{t.asset_count.toLocaleString()}</Count>
+                </SidebarItem>
+              ),
+            )}
           </section>
 
           <section className="mt-auto">
@@ -867,7 +1030,7 @@ export default function App() {
                 {inTrash
                   ? search || minRating
                     ? "Nothing in the Trash matches."
-                    : "The Trash is empty. Right-click a clip or press ⌘⌫ to move it here."
+                    : `The Trash is empty. Right-click a clip or press ${trashKey} to move it here.`
                   : filtered
                     ? "Nothing here matches."
                     : "No clips yet. Use “+ Add folder” to scan a folder or drive."}

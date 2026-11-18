@@ -27,7 +27,7 @@ pub fn allow_media_roots(app: &AppHandle, conn: &Connection) {
         )
         .and_then(|mut stmt| {
             stmt.query_map([], |r| {
-                Ok(Path::new(&r.get::<_, String>(0)?).join(r.get::<_, String>(1)?))
+                Ok(volumes::resolve(r.get::<_, String>(0)?, &r.get::<_, String>(1)?))
             })?
             .collect()
         })
@@ -74,7 +74,7 @@ pub fn app_status(db: State<'_, Db>) -> AppStatus {
 /// that folder. Returns the volume id at once.
 #[tauri::command(async)]
 pub fn add_root(app: AppHandle, db: State<'_, Db>, path: String) -> Result<i64, String> {
-    let root = std::fs::canonicalize(&path).map_err(|e| format!("cannot open {path}: {e}"))?;
+    let root = volumes::canonicalize(Path::new(&path)).map_err(|e| format!("cannot open {path}: {e}"))?;
     if !root.is_dir() {
         return Err(format!("{} is not a folder", root.display()));
     }
@@ -109,7 +109,7 @@ pub fn rescan(app: AppHandle, db: State<'_, Db>, volume_id: i64) -> Result<(), S
                 .into(),
         );
     }
-    let roots = roots.iter().map(|rel| mount.join(rel)).collect();
+    let roots = roots.iter().map(|rel| volumes::resolve(&mount, rel)).collect();
     scan::start(app, volume_id, mount, roots)
 }
 
@@ -267,4 +267,33 @@ pub fn move_assets(
     before_id: Option<i64>,
 ) -> Result<(), String> {
     db::move_assets(&mut db.conn.lock().unwrap(), scope, &asset_ids, before_id)
+}
+
+#[tauri::command(async)]
+pub fn rename_album(db: State<'_, Db>, album_id: i64, name: String) -> Result<(), String> {
+    db::rename_album(&db.conn.lock().unwrap(), album_id, &name)
+}
+
+/// Delete an album; its clips stay in the catalog.
+#[tauri::command(async)]
+pub fn delete_album(db: State<'_, Db>, album_id: i64) -> Result<(), String> {
+    db::delete_album(&mut db.conn.lock().unwrap(), album_id)
+}
+
+/// Rename a tag everywhere (merging into an existing tag of that name).
+#[tauri::command(async)]
+pub fn rename_tag(db: State<'_, Db>, name: String, new_name: String) -> Result<(), String> {
+    db::rename_tag(&mut db.conn.lock().unwrap(), &name, &new_name)
+}
+
+/// Remove a tag from every clip.
+#[tauri::command(async)]
+pub fn delete_tag(db: State<'_, Db>, name: String) -> Result<(), String> {
+    db::delete_tag(&mut db.conn.lock().unwrap(), &name)
+}
+
+/// Save the order you dragged albums, tags or drives into in the sidebar.
+#[tauri::command(async)]
+pub fn reorder_sidebar(db: State<'_, Db>, list: db::SidebarList, ids: Vec<i64>) -> Result<(), String> {
+    db::reorder(&mut db.conn.lock().unwrap(), list, &ids)
 }

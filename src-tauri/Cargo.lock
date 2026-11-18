@@ -3452,6 +3452,7 @@ name = "shelf"
 version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
+ "dunce",
  "image",
  "plist",
  "rusqlite",
@@ -3463,6 +3464,7 @@ dependencies = [
  "tauri-plugin-drag",
  "tauri-plugin-opener",
  "walkdir",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

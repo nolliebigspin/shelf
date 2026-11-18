@@ -37,7 +37,7 @@ pub fn delete_from_disk(conn: &mut Connection, asset_ids: &[i64]) -> Result<Dele
             report.skipped_offline += 1;
             continue;
         };
-        let path = Path::new(&mount).join(&rel);
+        let path = crate::volumes::resolve(&mount, &rel);
         match std::fs::symlink_metadata(&path) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => forget.push(id),
             Err(e) => report.failed.push(format!("{}: {e}", path.display())),

@@ -130,3 +130,15 @@ export const dragIcon = (assetIds: number[]) => invoke<string>("drag_icon", { as
 /** Rearrange by hand: `assetIds` go right before `beforeId` (null = at the end). */
 export const moveAssets = (scope: OrderScope, assetIds: number[], beforeId: number | null) =>
   invoke<void>("move_assets", { scope, assetIds, beforeId });
+export const renameAlbum = (albumId: number, name: string) => invoke<void>("rename_album", { albumId, name });
+/** Deletes the album only; its clips stay in the catalog. */
+export const deleteAlbum = (albumId: number) => invoke<void>("delete_album", { albumId });
+/** Renaming onto an existing tag merges the two. */
+export const renameTag = (name: string, newName: string) => invoke<void>("rename_tag", { name, newName });
+/** Removes the tag from every clip. */
+export const deleteTag = (name: string) => invoke<void>("delete_tag", { name });
+
+/** The sidebar lists you can sort by dragging. */
+export type SidebarList = "albums" | "tags" | "volumes";
+/** Save a hand-arranged order (`ids` top to bottom). */
+export const reorderSidebar = (list: SidebarList, ids: number[]) => invoke<void>("reorder_sidebar", { list, ids });

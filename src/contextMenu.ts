@@ -1,5 +1,6 @@
 import { Menu, MenuItem, PredefinedMenuItem, Submenu } from "@tauri-apps/api/menu";
 import type { Album, Asset } from "./api";
+import { revealLabel } from "./platform";
 
 interface ClipMenuActions {
   reveal: (id: number) => void;
@@ -40,7 +41,7 @@ export async function showClipMenu({
       ]
     : [
         await MenuItem.new({
-          text: "Reveal in Finder",
+          text: revealLabel,
           enabled: available,
           action: () => single && actions.reveal(single.id),
         }),
@@ -65,5 +66,13 @@ export async function showClipMenu({
       ];
 
   const menu = await Menu.new({ items });
+  await menu.popup();
+}
+
+/** Small native menu for sidebar items (albums, tags). */
+export async function showMenu(items: { text: string; action: () => void }[]) {
+  const menu = await Menu.new({
+    items: await Promise.all(items.map((i) => MenuItem.new({ text: i.text, action: i.action }))),
+  });
   await menu.popup();
 }

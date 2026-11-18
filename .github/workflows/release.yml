@@ -1,7 +1,14 @@
 name: Release
 
-# Runs only when a version tag is pushed (for example v0.1.1). Never on pull
+# Runs only when a version tag is pushed (for example v0.3.0). Never on pull
 # requests, so the signing secrets are not reachable from forks.
+#
+# 1. create-release: a draft release for the tag
+# 2. build: macOS, Windows and Linux in parallel, each attaching its installers
+#    plus a copy under a fixed name, so the website can link to
+#    releases/latest/download/<name> and always get the newest build
+# 3. publish: un-draft once every platform succeeded, so "latest" never points
+#    at a release with missing downloads
 on:
   push:
     tags:
@@ -11,8 +18,50 @@ permissions:
   contents: write
 
 jobs:
-  build-mac:
-    runs-on: macos-latest
+  create-release:
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.create.outputs.id }}
+    steps:
+      - id: create
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft \
+            --title "Shelf ${GITHUB_REF_NAME#v}" --notes "$(cat <<'EOF'
+          **macOS** (Apple Silicon and Intel): `Shelf_universal.dmg`. Signed and notarized by Apple.
+          **Windows** (10 and 11, x64): `Shelf_windows_x64-setup.exe`. Not code-signed yet, so SmartScreen may ask you to confirm ("More info" → "Run anyway").
+          **Linux** (x64): `Shelf_linux_amd64.AppImage`, or `.deb` / `.rpm`.
+
+          Shelf needs ffmpeg:
+          - macOS: `brew install ffmpeg`
+          - Windows: `winget install Gyan.FFmpeg`
+          - Linux: `sudo apt install ffmpeg` (the .deb installs it for you)
+          EOF
+          )"
+          id=$(gh api "repos/$GITHUB_REPOSITORY/releases" --jq ".[] | select(.tag_name == \"$GITHUB_REF_NAME\") | .id")
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: create-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
+            args: --target universal-apple-darwin --bundles app,dmg
+            bundle_dir: src-tauri/target/universal-apple-darwin/release/bundle
+          - platform: windows-latest
+            rust_targets: ""
+            args: --bundles nsis,msi
+            bundle_dir: src-tauri/target/release/bundle
+          # 22.04 keeps the AppImage and .deb compatible with older glibc versions.
+          - platform: ubuntu-22.04
+            rust_targets: ""
+            args: --bundles appimage,deb,rpm
+            bundle_dir: src-tauri/target/release/bundle
+    runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
 
@@ -23,42 +72,58 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
+          targets: ${{ matrix.rust_targets }}
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
 
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libxdo-dev
+
       - run: npm ci
 
-      # Tauri imports the certificate into a temporary keychain, signs the app,
-      # sends it to Apple for notarization and staples the result.
+      # On macOS, Tauri imports the certificate into a temporary keychain, signs
+      # the app, sends it to Apple for notarization and staples the result. The
+      # Apple secrets are only handed to the macOS job.
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_CERTIFICATE: ${{ runner.os == 'macOS' && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ runner.os == 'macOS' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_ID: ${{ runner.os == 'macOS' && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ runner.os == 'macOS' && secrets.APPLE_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ runner.os == 'macOS' && secrets.APPLE_TEAM_ID || '' }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: Shelf __VERSION__
-          releaseBody: |
-            Signed and notarized by Apple. Runs on Apple Silicon and Intel Macs.
+          releaseId: ${{ needs.create-release.outputs.release_id }}
+          args: ${{ matrix.args }}
 
-            Shelf needs ffmpeg: `brew install ffmpeg`
-          releaseDraft: false
-          prerelease: false
-          args: --target universal-apple-darwin --bundles app,dmg
-
-      # Same disk image under a fixed name, so the website can link to
-      # releases/latest/download/Shelf_universal.dmg and always get the newest build.
-      - name: Upload version-less disk image
+      - name: Upload fixed-name copies for the website
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUNDLE: ${{ matrix.bundle_dir }}
         run: |
-          dmg=$(ls src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg | head -n 1)
-          cp "$dmg" Shelf_universal.dmg
-          gh release upload "${{ github.ref_name }}" Shelf_universal.dmg --clobber
+          upload() {
+            src=$(ls "$BUNDLE"/$1 | head -n 1)
+            cp "$src" "$2"
+            gh release upload "$GITHUB_REF_NAME" "$2" --clobber --repo "$GITHUB_REPOSITORY"
+          }
+          case "$RUNNER_OS" in
+            macOS)   upload 'dmg/*.dmg' Shelf_universal.dmg ;;
+            Windows) upload 'nsis/*-setup.exe' Shelf_windows_x64-setup.exe ;;
+            Linux)   upload 'appimage/*.AppImage' Shelf_linux_amd64.AppImage
+                     upload 'deb/*.deb' Shelf_linux_amd64.deb ;;
+          esac
+
+  publish:
+    needs: [create-release, build]
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest

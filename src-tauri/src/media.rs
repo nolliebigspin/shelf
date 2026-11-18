@@ -1,13 +1,40 @@
-//! ffmpeg / ffprobe: locating the Homebrew binaries, reading metadata and
-//! grabbing thumbnails. Media files are only ever read.
+//! ffmpeg / ffprobe: locating the binaries, reading metadata and grabbing
+//! thumbnails. Media files are only ever read.
 
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-/// A Mac app started from Finder doesn't inherit the shell's PATH, so look in
-/// the Homebrew locations directly: Apple Silicon first, then Intel.
-const SEARCH_DIRS: [&str; 2] = ["/opt/homebrew/bin", "/usr/local/bin"];
+/// How to install ffmpeg, shown when it's missing.
+const INSTALL_HINT: &str = if cfg!(target_os = "macos") {
+    "brew install ffmpeg"
+} else if cfg!(target_os = "windows") {
+    "winget install Gyan.FFmpeg (then restart Shelf)"
+} else {
+    "sudo apt install ffmpeg (or your distribution's package manager)"
+};
+
+/// Where to look for ffmpeg. An app started from Finder or a desktop launcher
+/// doesn't always get the shell's PATH, so the usual install locations come first.
+fn search_dirs() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if cfg!(target_os = "macos") {
+        // Homebrew: Apple Silicon, then Intel.
+        dirs.extend(["/opt/homebrew/bin", "/usr/local/bin"].map(PathBuf::from));
+    } else if cfg!(target_os = "windows") {
+        let env = |k: &str| std::env::var_os(k).map(PathBuf::from);
+        dirs.extend(env("LOCALAPPDATA").map(|d| d.join("Microsoft").join("WinGet").join("Links")));
+        dirs.extend(env("USERPROFILE").map(|d| d.join("scoop").join("shims")));
+        dirs.extend(env("ProgramData").map(|d| d.join("chocolatey").join("bin")));
+        dirs.push(PathBuf::from("C:\\ffmpeg\\bin"));
+    } else {
+        dirs.extend(["/usr/bin", "/usr/local/bin", "/snap/bin"].map(PathBuf::from));
+    }
+    if let Some(path) = std::env::var_os("PATH") {
+        dirs.extend(std::env::split_paths(&path));
+    }
+    dirs
+}
 
 #[derive(Clone, Debug)]
 pub struct Tools {
@@ -16,10 +43,12 @@ pub struct Tools {
 }
 
 fn find(name: &str) -> Option<PathBuf> {
-    SEARCH_DIRS
-        .iter()
-        .map(|dir| PathBuf::from(dir).join(name))
-        .find(|p| p.is_file())
+    let file = if cfg!(target_os = "windows") {
+        format!("{name}.exe")
+    } else {
+        name.to_owned()
+    };
+    search_dirs().into_iter().map(|dir| dir.join(&file)).find(|p| p.is_file())
 }
 
 pub fn detect() -> Result<Tools, String> {
@@ -34,9 +63,8 @@ pub fn detect() -> Result<Tools, String> {
                 missing.push("ffprobe");
             }
             Err(format!(
-                "{} not found in {}. Install it with: brew install ffmpeg",
-                missing.join(" and "),
-                SEARCH_DIRS.join(" or ")
+                "{} not found. Install it with: {INSTALL_HINT}",
+                missing.join(" and ")
             ))
         }
     }
@@ -55,6 +83,13 @@ pub struct Meta {
 fn command(bin: &Path) -> Command {
     let mut cmd = Command::new(bin);
     cmd.stdin(Stdio::null());
+    #[cfg(target_os = "windows")]
+    {
+        // Don't flash a console window for every probe / thumbnail.
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
     cmd
 }
 

@@ -62,6 +62,11 @@ pub fn rel_path(mount: &Path, path: &Path) -> Option<String> {
     Some(parts?.join("/"))
 }
 
+/// Dot files and folders, plus Windows' system folders on a drive root.
+fn is_hidden(name: &str) -> bool {
+    name.starts_with('.') || name.starts_with('$') || name == "System Volume Information"
+}
+
 /// Walk `root` (a folder on the drive mounted at `mount`) and return every media file.
 /// Hidden files and folders (`.Spotlight-V100`, `.Trashes`, `.fseventsd`, `._*`, …)
 /// are skipped; symlinks are not followed.
@@ -70,7 +75,7 @@ pub fn walk(mount: &Path, root: &Path, mut on_found: impl FnMut(usize)) -> Vec<F
     let walker = WalkDir::new(root)
         .follow_links(false)
         .into_iter()
-        .filter_entry(|e| e.depth() == 0 || !e.file_name().to_string_lossy().starts_with('.'));
+        .filter_entry(|e| e.depth() == 0 || !is_hidden(&e.file_name().to_string_lossy()));
 
     // Unreadable folders are skipped rather than failing the whole scan.
     for entry in walker.flatten() {
