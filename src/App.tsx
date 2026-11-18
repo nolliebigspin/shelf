@@ -1,38 +1,142 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { open } from "@tauri-apps/plugin-dialog";
+import { ask, open } from "@tauri-apps/plugin-dialog";
+import { startDrag } from "@crabnebula/tauri-plugin-drag";
 import {
   addRoot,
   addToAlbum,
   appStatus,
   createAlbum,
+  deleteFromDisk,
+  dragIcon,
   listAlbums,
   listAssets,
   listTags,
+  moveAssets,
   openExternal,
   refreshVolumes,
   removeFromAlbum,
   rescan,
+  restoreAssets,
   reveal,
   setTags,
+  trashAssets,
+  trashCount,
   updateAsset,
   type Album,
   type AppStatus,
   type Asset,
   type AssetFilter,
+  type DeleteReport,
+  type OrderScope,
   type ScanProgress,
+  type SortKey,
   type Tag,
   type Volume,
 } from "./api";
-import { Grid } from "./Grid";
+import { ClipList, Grid } from "./Grid";
+import { registerGhost, useDnd, type DragConfig, type DropTarget } from "./dnd";
+import { formatBytes } from "./format";
 import { Inspector, type InspectorActions } from "./Inspector";
+import { clamp, ResizeHandle, usePanelWidth, useWindowWidth } from "./ResizeHandle";
+import { showClipMenu } from "./contextMenu";
 import { useSelection } from "./store";
+
+const LEFT = { initial: 224, min: 180, max: 400 };
+const RIGHT = { initial: 288, min: 260 };
+/** The grid keeps at least this much room between the panels. */
+const MIN_GRID = 320;
 
 type View =
   | { kind: "all" }
+  | { kind: "trash" }
   | { kind: "volume"; id: number }
   | { kind: "album"; id: number }
   | { kind: "tag"; name: string };
+
+type Sort = { key: SortKey; desc: boolean };
+type Layout = "grid" | "list";
+
+const SORT_LABELS: Record<SortKey, string> = {
+  custom: "Custom",
+  name: "Name",
+  captured: "Date captured",
+  added: "Date added",
+  size: "Size",
+  duration: "Duration",
+  rating: "Rating",
+  kind: "Kind",
+  trashed: "Date trashed",
+};
+
+/** Albums, drives and All clips can be arranged by hand. */
+const hasCustomOrder = (v: View) => v.kind === "all" || v.kind === "volume" || v.kind === "album";
+const viewKey = (v: View) =>
+  v.kind === "volume" || v.kind === "album" ? `${v.kind}:${v.id}` : v.kind === "tag" ? "tag" : v.kind;
+const sortKeysFor = (v: View): SortKey[] =>
+  (Object.keys(SORT_LABELS) as SortKey[]).filter(
+    (k) => (k !== "custom" || hasCustomOrder(v)) && (k !== "trashed" || v.kind === "trash"),
+  );
+const defaultSort = (v: View): Sort =>
+  v.kind === "trash"
+    ? { key: "trashed", desc: true }
+    : hasCustomOrder(v)
+      ? { key: "custom", desc: false }
+      : { key: "name", desc: false };
+/** Dates, sizes and ratings read best biggest/newest first. */
+const DESC_FIRST: SortKey[] = ["captured", "added", "size", "duration", "rating", "trashed"];
+
+function readJson<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as T) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+function writeJson(key: string, value: unknown) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // Not remembered; harmless.
+  }
+}
+
+/** The floating preview next to the cursor while clips are dragged inside the window. */
+function DragGhost() {
+  const drag = useDnd((s) => s.drag);
+  const blocked = useDnd((s) => s.target?.kind === "no-reorder");
+  return (
+    <div ref={registerGhost} className="pointer-events-none fixed left-0 top-0 z-50">
+      {drag && (
+        <div className="flex flex-col items-start gap-1">
+          <div className="relative">
+            {drag.ids.length > 1 && (
+              <div className="absolute left-1.5 top-1.5 h-10 w-[72px] rounded bg-neutral-700 ring-1 ring-neutral-500" />
+            )}
+            <div className="relative h-10 w-[72px] overflow-hidden rounded bg-neutral-900 opacity-90 shadow-lg ring-1 ring-sky-400">
+              {drag.thumb && <img src={drag.thumb} alt="" className="h-full w-full object-cover" />}
+            </div>
+            {drag.ids.length > 1 && (
+              <span className="absolute -right-2.5 -top-2 rounded-full bg-sky-500 px-1.5 text-[11px] font-semibold tabular-nums text-white shadow">
+                {drag.ids.length}
+              </span>
+            )}
+          </div>
+          {drag.label && (
+            <span
+              className={`whitespace-nowrap rounded px-1.5 py-0.5 text-[11px] shadow ${
+                blocked ? "bg-neutral-800 text-amber-300" : "bg-sky-500 text-white"
+              }`}
+            >
+              {drag.label}
+            </span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function StatusLine({ status, error }: { status: AppStatus | null; error: string | null }) {
   if (error) return <span className="text-red-400">Backend error: {error}</span>;
@@ -88,20 +192,29 @@ function SidebarItem({
   active,
   onClick,
   title,
+  drop,
   children,
 }: {
   active: boolean;
   onClick: () => void;
   title?: string;
+  /** Makes the item a drop target for clips dragged from the grid. */
+  drop?: { id: string; dragging: boolean; hovered: boolean };
   children: React.ReactNode;
 }) {
+  const dropStyle = !drop?.dragging
+    ? ""
+    : drop.hovered
+      ? "bg-sky-500/25 text-neutral-100 ring-1 ring-sky-400"
+      : "outline-1 outline-dashed -outline-offset-1 outline-neutral-600";
   return (
     <button
       onClick={onClick}
       title={title}
+      data-drop={drop?.id}
       className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left hover:bg-neutral-800 ${
         active ? "bg-neutral-800 text-neutral-100" : ""
-      }`}
+      } ${dropStyle}`}
     >
       {children}
     </button>
@@ -128,6 +241,14 @@ export default function App() {
   const [tags, setTagList] = useState<Tag[]>([]);
   const [scans, setScans] = useState<Record<number, ScanProgress>>({});
   const [notice, setNotice] = useState<string | null>(null);
+  /** Neutral feedback, e.g. after deleting from a drive. */
+  const [info, setInfo] = useState<string | null>(null);
+  const [trashTotal, setTrashTotal] = useState(0);
+  const dropTarget = useDnd((s) => s.target);
+  const draggingClips = useDnd((s) => s.drag !== null);
+  const windowWidth = useWindowWidth();
+  const [leftRaw, setLeft] = usePanelWidth("shelf.leftWidth", LEFT.initial);
+  const [rightRaw, setRight] = usePanelWidth("shelf.rightWidth", RIGHT.initial);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [view, setView] = useState<View>({ kind: "all" });
   const [searchInput, setSearchInput] = useState("");
@@ -135,6 +256,24 @@ export default function App() {
   const [minRating, setMinRating] = useState(0);
   const [newAlbum, setNewAlbum] = useState<string | null>(null);
   const selected = useSelection((s) => s.selected);
+  const [layout, setLayoutState] = useState<Layout>(() =>
+    readJson<Layout>("shelf.layout", "grid") === "list" ? "list" : "grid",
+  );
+  const setLayout = (l: Layout) => {
+    setLayoutState(l);
+    writeJson("shelf.layout", l);
+  };
+  // Sort is remembered per view (each album and drive has its own).
+  const [sorts, setSorts] = useState<Record<string, Sort>>(() => readJson("shelf.sorts", {}));
+  const stored = sorts[viewKey(view)];
+  const sort: Sort = stored && sortKeysFor(view).includes(stored.key) ? stored : defaultSort(view);
+  const setSort = (next: Sort) => {
+    const all = { ...sorts, [viewKey(view)]: next };
+    setSorts(all);
+    writeJson("shelf.sorts", all);
+  };
+  const sortBy = (key: SortKey) =>
+    setSort(key === sort.key ? { key, desc: !sort.desc } : { key, desc: DESC_FIRST.includes(key) });
 
   // Debounce typing so each keystroke doesn't hit the database.
   useEffect(() => {
@@ -149,8 +288,11 @@ export default function App() {
       tag: view.kind === "tag" ? view.name : null,
       search: search || null,
       min_rating: minRating || null,
+      trashed: view.kind === "trash" ? true : null,
+      sort: sort.key,
+      descending: sort.desc,
     }),
-    [view, search, minRating],
+    [view, search, minRating, sort.key, sort.desc],
   );
   const filterRef = useRef(filter);
   filterRef.current = filter;
@@ -172,10 +314,11 @@ export default function App() {
 
   const loadSidebar = useCallback(
     () =>
-      Promise.all([listAlbums(), listTags()]).then(
-        ([a, t]) => {
+      Promise.all([listAlbums(), listTags(), trashCount()]).then(
+        ([a, t, n]) => {
           setAlbums(a);
           setTagList(t);
+          setTrashTotal(n);
         },
         (e) => setNotice(String(e)),
       ),
@@ -244,6 +387,7 @@ export default function App() {
   const mutate = useCallback(
     async (change: () => Promise<unknown>) => {
       setNotice(null);
+      setInfo(null);
       try {
         await change();
       } catch (e) {
@@ -266,7 +410,62 @@ export default function App() {
     [mutate, selectedIds],
   );
 
+  /** Trash membership changes drive counts too, which come from the volume list. */
+  const mutateTrash = useCallback(
+    (change: () => Promise<unknown>) => mutate(change).then(() => loadVolumes()),
+    [mutate, loadVolumes],
+  );
+
+  const assetsRef = useRef(assets);
+  assetsRef.current = assets;
+
+  /** Ask, then permanently delete these trashed clips' files from their drives. */
+  const confirmDelete = useCallback(
+    async (rows: Asset[]) => {
+      if (rows.length === 0) return;
+      setNotice(null);
+      setInfo(null);
+      const reachable = rows.filter((a) => a.online);
+      const offline = rows.length - reachable.length;
+      if (reachable.length === 0) {
+        setNotice("Their drive is offline. Plug it in to delete these files.");
+        return;
+      }
+      const bytes = reachable.reduce((n, a) => n + a.size_bytes, 0);
+      const files = reachable.length === 1 ? "1 file" : `${reachable.length.toLocaleString()} files`;
+      const ok = await ask(
+        `Permanently delete ${files} (${formatBytes(bytes)}) from your drives?\n\n` +
+          "They will not go to the Finder Trash. This cannot be undone." +
+          (offline > 0 ? `\n\n${offline.toLocaleString()} on offline drives will be skipped.` : ""),
+        { title: "Delete from Drive", kind: "warning", okLabel: "Delete Permanently", cancelLabel: "Cancel" },
+      );
+      if (!ok) return;
+      let report: DeleteReport | null = null;
+      await mutateTrash(async () => {
+        report = await deleteFromDisk(reachable.map((a) => a.id));
+      });
+      const r = report as DeleteReport | null;
+      if (!r) return;
+      const parts = [`Deleted ${r.deleted.toLocaleString()} from drive`];
+      if (offline + r.skipped_offline > 0) parts.push(`${offline + r.skipped_offline} skipped (offline)`);
+      setInfo(parts.join(" · "));
+      if (r.failed.length > 0) setNotice(`${r.failed.length} could not be deleted: ${r.failed.join("; ")}`);
+    },
+    [mutateTrash],
+  );
+
+  const emptyTrash = useCallback(
+    () => listAssets({ trashed: true }).then(confirmDelete, (e) => setNotice(String(e))),
+    [confirmDelete],
+  );
+
+  const trashSelected = useCallback(() => {
+    const ids = selectedIds();
+    if (ids.length > 0) mutateTrash(() => trashAssets(ids));
+  }, [mutateTrash, selectedIds]);
+
   const albumId = view.kind === "album" ? view.id : null;
+  const inTrash = view.kind === "trash";
   const actions: InspectorActions = {
     rename: (id, name) => mutate(() => updateAsset(id, { display_name: name })),
     rate,
@@ -277,6 +476,98 @@ export default function App() {
     openExternal: (id) => openExternal(id).catch((e) => setNotice(String(e))),
     removeFromAlbum:
       albumId === null ? undefined : () => mutate(() => removeFromAlbum(albumId, selectedIds())),
+    trash: trashSelected,
+    restore: () => mutateTrash(() => restoreAssets(selectedIds())),
+    deleteFromDisk: () => {
+      const ids = new Set(selectedIds());
+      confirmDelete(assetsRef.current.filter((a) => ids.has(a.id)));
+    },
+  };
+  const actionsRef = useRef(actions);
+  actionsRef.current = actions;
+  const albumsRef = useRef(albums);
+  albumsRef.current = albums;
+  const albumName = albumId === null ? null : (albums.find((a) => a.id === albumId)?.name ?? null);
+  const menuContext = useRef({ inTrash, albumName });
+  menuContext.current = { inTrash, albumName };
+
+  const openClipMenu = useCallback(() => {
+    const { selected } = useSelection.getState();
+    showClipMenu({
+      selection: assetsRef.current.filter((a) => selected.has(a.id)),
+      albums: albumsRef.current,
+      ...menuContext.current,
+      actions: actionsRef.current,
+    }).catch((e) => setNotice(String(e)));
+  }, []);
+
+  // Drag and drop inside the window (see dnd.ts): onto an album, the Trash, or
+  // between clips to rearrange. Leaving the window hands over to a native file drag.
+  const orderScope: OrderScope | null =
+    view.kind === "album"
+      ? { album_id: view.id, volume_id: null }
+      : view.kind === "volume"
+        ? { album_id: null, volume_id: view.id }
+        : view.kind === "all"
+          ? { album_id: null, volume_id: null }
+          : null;
+  const reorderBlocker =
+    orderScope === null
+      ? "This view can’t be arranged by hand"
+      : sort.key !== "custom" || sort.desc
+        ? "Choose Sort: Custom ↑ to rearrange"
+        : search || minRating
+          ? "Clear the search and rating filter to rearrange"
+          : null;
+
+  const dropOn = (ids: number[], target: DropTarget) => {
+    if (target.kind === "album") mutate(() => addToAlbum(target.id, ids));
+    else if (target.kind === "trash") mutateTrash(() => trashAssets(ids));
+    else if (target.kind === "reorder" && orderScope) {
+      // Show the new order at once; the reload confirms it.
+      const moving = new Set(ids);
+      setAssets((rows) => {
+        const moved = rows.filter((a) => moving.has(a.id));
+        const rest = rows.filter((a) => !moving.has(a.id));
+        const at = target.beforeId === null ? -1 : rest.findIndex((a) => a.id === target.beforeId);
+        rest.splice(at < 0 ? rest.length : at, 0, ...moved);
+        return rest;
+      });
+      mutate(() => moveAssets(orderScope, ids, target.beforeId));
+    }
+  };
+
+  /** Hand the drag to macOS once the pointer leaves the window, for editors and Finder. */
+  const dragOut = async (ids: number[]) => {
+    const wanted = new Set(ids);
+    const files = assetsRef.current.filter((a) => wanted.has(a.id) && a.online && !a.missing && a.path);
+    if (files.length === 0) {
+      setNotice("Only clips on a connected drive can be dragged out of Shelf.");
+      return;
+    }
+    const icon = await dragIcon(files.map((a) => a.id)).catch(() => files.find((a) => a.thumb_path)?.thumb_path);
+    if (!icon) return;
+    // "copy" so a drop onto Finder can never move the original off the drive.
+    startDrag({ item: files.map((a) => a.path!), icon, mode: "copy" }).catch((e) => setNotice(String(e)));
+  };
+
+  const dragConfig: DragConfig = {
+    order: () => assetsRef.current.map((a) => a.id),
+    layout,
+    canReorder: () => reorderBlocker === null,
+    canDropOnSidebar: () => !inTrash,
+    describe: (target, ids) => {
+      if (!target) return null;
+      if (target.kind === "album") {
+        const name = albumsRef.current.find((a) => a.id === target.id)?.name ?? "album";
+        return `Add to “${name}”`;
+      }
+      if (target.kind === "trash") return ids.length > 1 ? `Move ${ids.length} to Trash` : "Move to Trash";
+      if (target.kind === "reorder") return "Move here";
+      return reorderBlocker;
+    },
+    onDrop: dropOn,
+    onLeaveWindow: (ids) => void dragOut(ids),
   };
 
   const submitNewAlbum = () => {
@@ -291,9 +582,10 @@ export default function App() {
     });
   };
 
-  // Keyboard: 1–5 rate, 0 clear, Space play/pause, ⌘A select all, Esc deselect. Ignored while typing.
-  const assetsRef = useRef(assets);
-  assetsRef.current = assets;
+  // Keyboard: 1–5 rate, 0 clear, Space play/pause, ⌘A select all, Esc deselect,
+  // ⌘⌫ / Delete move to Trash (never deletes from a drive). Ignored while typing.
+  const inTrashRef = useRef(inTrash);
+  inTrashRef.current = inTrash;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const el = e.target as HTMLElement | null;
@@ -311,6 +603,9 @@ export default function App() {
         else player.pause();
       } else if (e.key === "Escape") {
         useSelection.getState().clear();
+      } else if ((e.key === "Backspace" && e.metaKey) || e.key === "Delete") {
+        e.preventDefault();
+        if (!inTrashRef.current) trashSelected();
       } else if (!e.metaKey && !e.ctrlKey && !e.altKey && /^[0-5]$/.test(e.key)) {
         e.preventDefault();
         rate(Number(e.key));
@@ -318,16 +613,28 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [rate]);
+  }, [rate, trashSelected]);
 
   const total = volumes.reduce((n, v) => n + v.asset_count, 0);
   const selection = useMemo(() => assets.filter((a) => selected.has(a.id)), [assets, selected]);
   const filtered = view.kind !== "all" || search !== "" || minRating > 0;
+  const left = clamp(leftRaw, LEFT.min, LEFT.max);
+  const right = clamp(rightRaw, RIGHT.min, windowWidth - left - MIN_GRID);
+  const dropProps = (id: string) => ({
+    id,
+    dragging: draggingClips && !inTrash,
+    hovered:
+      (dropTarget?.kind === "trash" && id === "trash") ||
+      (dropTarget?.kind === "album" && id === `album:${dropTarget.id}`),
+  });
 
   return (
     <div className="flex h-full flex-col">
       <div className="flex min-h-0 flex-1">
-        <aside className="flex w-56 shrink-0 flex-col gap-4 overflow-y-auto border-r border-neutral-800 bg-neutral-900 p-3">
+        <aside
+          style={{ width: left }}
+          className="flex shrink-0 flex-col gap-4 overflow-y-auto border-r border-neutral-800 bg-neutral-900 p-3"
+        >
           <SidebarItem active={view.kind === "all"} onClick={() => setView({ kind: "all" })}>
             All clips <Count>{total.toLocaleString()}</Count>
           </SidebarItem>
@@ -382,6 +689,7 @@ export default function App() {
                 key={a.id}
                 active={view.kind === "album" && view.id === a.id}
                 onClick={() => setView({ kind: "album", id: a.id })}
+                drop={dropProps(`album:${a.id}`)}
               >
                 <span className="truncate">{a.name}</span>
                 <Count>{a.asset_count.toLocaleString()}</Count>
@@ -425,7 +733,29 @@ export default function App() {
               </SidebarItem>
             ))}
           </section>
+
+          <section className="mt-auto">
+            <SidebarItem
+              active={view.kind === "trash"}
+              onClick={() => setView({ kind: "trash" })}
+              title="Clips hidden from the catalog. Their files stay on the drive until you delete them here."
+              drop={dropProps("trash")}
+            >
+              <span aria-hidden className="shrink-0 text-neutral-500">
+                🗑
+              </span>
+              Trash <Count>{trashTotal > 0 ? trashTotal.toLocaleString() : ""}</Count>
+            </SidebarItem>
+          </section>
         </aside>
+        <ResizeHandle
+          side="left"
+          width={left}
+          min={LEFT.min}
+          max={LEFT.max}
+          onChange={setLeft}
+          onReset={() => setLeft(LEFT.initial)}
+        />
 
         <div className="flex min-w-0 flex-1 flex-col">
           <header className="flex h-10 shrink-0 items-center gap-3 border-b border-neutral-800 px-3">
@@ -435,7 +765,7 @@ export default function App() {
               placeholder="Search names and tags"
               onChange={(e) => setSearchInput(e.target.value)}
               onKeyDown={(e) => e.key === "Escape" && setSearchInput("")}
-              className="w-64 rounded border border-neutral-700 bg-neutral-950 px-2 py-1 text-neutral-100 outline-none select-text placeholder:text-neutral-600 focus:border-sky-500"
+              className="w-64 min-w-32 shrink rounded border border-neutral-700 bg-neutral-950 px-2 py-1 text-neutral-100 outline-none select-text placeholder:text-neutral-600 focus:border-sky-500"
             />
             <select
               value={minRating}
@@ -451,10 +781,91 @@ export default function App() {
                 </option>
               ))}
             </select>
+            <div className="flex shrink-0 items-center">
+              <select
+                value={sort.key}
+                onChange={(e) => setSort({ key: e.target.value as SortKey, desc: DESC_FIRST.includes(e.target.value as SortKey) })}
+                title="Sort by"
+                aria-label="Sort by"
+                className="rounded-l border border-neutral-700 bg-neutral-950 px-2 py-1 text-neutral-100 outline-none"
+              >
+                {sortKeysFor(view).map((k) => (
+                  <option key={k} value={k}>
+                    {k === "custom" ? "Custom (drag to arrange)" : SORT_LABELS[k]}
+                  </option>
+                ))}
+              </select>
+              <button
+                onClick={() => setSort({ ...sort, desc: !sort.desc })}
+                title={sort.desc ? "Descending: click for ascending" : "Ascending: click for descending"}
+                className="-ml-px rounded-r border border-neutral-700 bg-neutral-950 px-2 py-1 text-neutral-300 hover:text-neutral-100"
+              >
+                {sort.desc ? "↓" : "↑"}
+              </button>
+            </div>
+            <div className="flex shrink-0 overflow-hidden rounded border border-neutral-700" role="group" aria-label="Layout">
+              {(["grid", "list"] as const).map((l) => (
+                <button
+                  key={l}
+                  onClick={() => setLayout(l)}
+                  title={l === "grid" ? "Grid" : "List"}
+                  aria-pressed={layout === l}
+                  className={`px-2 py-1 ${layout === l ? "bg-neutral-700 text-neutral-100" : "bg-neutral-950 text-neutral-500 hover:text-neutral-200"}`}
+                >
+                  {l === "grid" ? (
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor" aria-hidden>
+                      <rect x="1" y="1" width="5" height="5" rx="1" />
+                      <rect x="8" y="1" width="5" height="5" rx="1" />
+                      <rect x="1" y="8" width="5" height="5" rx="1" />
+                      <rect x="8" y="8" width="5" height="5" rx="1" />
+                    </svg>
+                  ) : (
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor" aria-hidden>
+                      <rect x="1" y="2" width="12" height="2" rx="1" />
+                      <rect x="1" y="6" width="12" height="2" rx="1" />
+                      <rect x="1" y="10" width="12" height="2" rx="1" />
+                    </svg>
+                  )}
+                </button>
+              ))}
+            </div>
             <ScanStatus scans={scans} />
+            {inTrash && (
+              <>
+                {selected.size > 0 && (
+                  <button
+                    onClick={actions.restore}
+                    className="shrink-0 rounded border border-neutral-700 px-2 py-0.5 text-xs text-neutral-200 hover:bg-neutral-800"
+                  >
+                    Put Back
+                  </button>
+                )}
+                {selected.size > 0 && (
+                  <button
+                    onClick={actions.deleteFromDisk}
+                    className="shrink-0 rounded border border-red-900 px-2 py-0.5 text-xs text-red-300 hover:bg-red-950"
+                  >
+                    Delete Selected from Drive…
+                  </button>
+                )}
+                <button
+                  disabled={trashTotal === 0}
+                  onClick={emptyTrash}
+                  title="Permanently delete every clip in the Trash from its drive"
+                  className="shrink-0 rounded border border-red-900 px-2 py-0.5 text-xs text-red-300 hover:bg-red-950 disabled:border-neutral-800 disabled:text-neutral-600 disabled:hover:bg-transparent"
+                >
+                  Empty Trash…
+                </button>
+              </>
+            )}
             {notice && (
               <span className="min-w-0 truncate text-xs text-red-400" title={notice}>
                 {notice}
+              </span>
+            )}
+            {info && !notice && (
+              <span className="min-w-0 truncate text-xs text-neutral-400" title={info}>
+                {info}
               </span>
             )}
             <span className="ml-auto shrink-0 text-xs tabular-nums text-neutral-500">
@@ -465,20 +876,43 @@ export default function App() {
           <main className="min-h-0 flex-1">
             {assets.length === 0 ? (
               <div className="flex h-full items-center justify-center text-neutral-500">
-                {filtered
-                  ? "Nothing here matches."
-                  : "No clips yet. Use “+ Add folder” to scan a folder or drive."}
+                {inTrash
+                  ? search || minRating
+                    ? "Nothing in the Trash matches."
+                    : "The Trash is empty. Right-click a clip or press ⌘⌫ to move it here."
+                  : filtered
+                    ? "Nothing here matches."
+                    : "No clips yet. Use “+ Add folder” to scan a folder or drive."}
               </div>
             ) : (
-              <Grid assets={assets} />
+              layout === "grid" ? (
+                <Grid assets={assets} onContextMenu={openClipMenu} dragConfig={dragConfig} />
+              ) : (
+                <ClipList
+                  assets={assets}
+                  onContextMenu={openClipMenu}
+                  dragConfig={dragConfig}
+                  sort={sort}
+                  onSort={sortBy}
+                />
+              )
             )}
           </main>
         </div>
 
-        <aside className="w-72 shrink-0 border-l border-neutral-800 bg-neutral-900">
-          <Inspector selection={selection} albums={albums} actions={actions} />
+        <ResizeHandle
+          side="right"
+          width={right}
+          min={RIGHT.min}
+          max={windowWidth - left - MIN_GRID}
+          onChange={setRight}
+          onReset={() => setRight(RIGHT.initial)}
+        />
+        <aside style={{ width: right }} className="shrink-0 border-l border-neutral-800 bg-neutral-900">
+          <Inspector selection={selection} albums={albums} inTrash={inTrash} actions={actions} />
         </aside>
       </div>
+      <DragGhost />
       <footer className="flex h-7 shrink-0 items-center gap-4 border-t border-neutral-800 bg-neutral-900 px-3 text-xs text-neutral-400">
         <StatusLine status={status} error={error} />
       </footer>

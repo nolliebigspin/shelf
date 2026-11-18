@@ -23,7 +23,7 @@ A Mac-only app that scans a folder on your SSD, shows every clip as a thumbnail,
 
 ## 2. Rules the agent must never break
 
-1. **Read-only on media.** Never write, rename, move or delete anything on a scanned drive. Open media files read-only. "Remove" in the UI removes from the catalog only.
+1. **Read-only on media.** Never write, rename, move or delete anything on a scanned drive. Open media files read-only. "Remove" and "Move to Trash" in the UI change the catalog only. The single exception (added Nov 18, 2026, on request): **Trash → Delete from Drive / Empty Trash** permanently deletes the files of clips that are already in Shelf's Trash, after a warning dialog. Only `trash::delete_from_disk` may delete files, and it ignores any clip that isn't in the Trash.
 2. **Locate files by drive UUID + relative path, never by absolute path.** `/Volumes/T7` can change; the UUID doesn't.
 3. **Derived files live in the app data folder** (thumbnails, database), never next to the media.
 4. **Offline is normal, not an error.** Unmounted drive = clips still listed, metadata still editable, playback disabled.
@@ -157,7 +157,7 @@ Export this doc as Markdown, save it as `PLAN.md` in an empty folder, and start 
 Read PLAN.md. Build the app it describes, one step from section 6 at a time.
 
 Rules:
-- Follow section 2 strictly. Never write to, rename, move or delete files on a scanned drive, including in tests.
+- Follow section 2 strictly. Never write to, rename, move or delete files on a scanned drive, including in tests (the Trash delete test works on a temp folder it creates).
 - Use exactly the stack in section 3 and the schema in section 4. Don't add features from "Later".
 - After each step, run the app, tell me how to verify its checkpoint, and stop until I confirm.
 - Keep Rust in modules: db.rs, volumes.rs, scan.rs, media.rs (ffmpeg/ffprobe), commands.rs.

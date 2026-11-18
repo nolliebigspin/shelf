@@ -1,6 +1,6 @@
 # Shelf
 
-A read-only media catalog for macOS: scan a folder or drive, browse clips as thumbnails, then name, tag, rate and group them into albums. Media files are never modified. See [PLAN.md](PLAN.md).
+A read-only media catalog for macOS: scan a folder or drive, browse clips as thumbnails, then name, tag, rate and group them into albums. Media files are never modified; the only exception is **Trash → Delete from Drive**, which permanently deletes trashed clips' files after a confirmation. See [PLAN.md](PLAN.md).
 
 ```bash
 npm install

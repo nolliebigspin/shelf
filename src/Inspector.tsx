@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import type { Album, Asset } from "./api";
-import { formatDuration } from "./Grid";
+import { formatBytes, formatDate, formatDuration } from "./format";
 
 export interface InspectorActions {
   rename: (id: number, name: string) => void;
@@ -13,23 +13,9 @@ export interface InspectorActions {
   openExternal: (id: number) => void;
   /** Only set while an album is open. */
   removeFromAlbum?: () => void;
-}
-
-function formatBytes(n: number): string {
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  let i = 0;
-  while (n >= 1000 && i < units.length - 1) {
-    n /= 1000;
-    i++;
-  }
-  return `${n.toFixed(i === 0 || n >= 100 ? 0 : 1)} ${units[i]}`;
-}
-
-function formatDate(seconds: number): string {
-  return new Date(seconds * 1000).toLocaleString(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  });
+  trash: () => void;
+  restore: () => void;
+  deleteFromDisk: () => void;
 }
 
 function Stars({ value, onChange }: { value: number; onChange: (n: number) => void }) {
@@ -102,10 +88,15 @@ export function isPlayable(asset: Asset): boolean {
   );
 }
 
-/** Player for clips the webview can decode; otherwise the thumbnail with a hint. */
+/**
+ * Player for clips the webview can decode; otherwise a picture with a hint.
+ * Always the full panel width, at the clip's own aspect ratio (the panel scrolls).
+ */
 function Preview({ asset }: { asset: Asset }) {
   const [failed, setFailed] = useState(false);
+  const [fullFailed, setFullFailed] = useState(false);
   const poster = asset.thumb_path ? convertFileSrc(asset.thumb_path) : undefined;
+  const aspectRatio = asset.width && asset.height ? `${asset.width} / ${asset.height}` : "16 / 9";
   if (isPlayable(asset) && !failed) {
     return (
       <video
@@ -115,17 +106,32 @@ function Preview({ asset }: { asset: Asset }) {
         controls
         preload="metadata"
         onError={() => setFailed(true)}
-        className="aspect-video w-full rounded bg-black"
+        style={{ aspectRatio }}
+        className="w-full shrink-0 rounded bg-black"
       />
     );
   }
+  // Photos show the original file so a wide panel stays sharp; the thumbnail is the fallback.
+  const original =
+    asset.kind === "image" && asset.online && !asset.missing && asset.path && !fullFailed
+      ? convertFileSrc(asset.path)
+      : undefined;
+  const src = original ?? poster;
   let hint: string | null = null;
   if (!asset.online) hint = "Drive offline";
   else if (asset.missing) hint = "File not found on last scan";
   else if (asset.kind === "video") hint = "Can’t play this format here. Use “Open externally”.";
   return (
-    <div className="relative aspect-video overflow-hidden rounded bg-black">
-      {poster && <img src={poster} alt="" draggable={false} className="h-full w-full object-contain" />}
+    <div style={{ aspectRatio }} className="relative w-full shrink-0 overflow-hidden rounded bg-black">
+      {src && (
+        <img
+          src={src}
+          alt=""
+          draggable={false}
+          onError={() => original && setFullFailed(true)}
+          className="h-full w-full object-contain"
+        />
+      )}
       {hint && (
         <div className="absolute inset-x-0 bottom-0 bg-black/70 px-2 py-1 text-center text-xs text-neutral-200">
           {hint}
@@ -146,10 +152,12 @@ function Label({ children }: { children: React.ReactNode }) {
 export function Inspector({
   selection,
   albums,
+  inTrash,
   actions,
 }: {
   selection: Asset[];
   albums: Album[];
+  inTrash: boolean;
   actions: InspectorActions;
 }) {
   if (selection.length === 0) {
@@ -188,6 +196,12 @@ export function Inspector({
               Open externally
             </button>
           </div>
+          {!inTrash && (
+            <p className="-mt-2 text-[11px] leading-snug text-neutral-500">
+              Drag clips onto an album or the Trash, between clips to rearrange (Sort: Custom), or out of
+              the window into Final Cut, Premiere, Resolve or Finder (the original file, never a copy).
+            </p>
+          )}
           <section>
             <Label>Display name</Label>
             <NameField asset={single} onRename={(name) => actions.rename(single.id, name)} />
@@ -231,6 +245,28 @@ export function Inspector({
         <TagInput onAdd={actions.addTags} />
       </section>
 
+      {inTrash ? (
+        <section>
+          <Label>In Trash</Label>
+          <p className="mb-2 text-xs text-neutral-500">
+            Hidden everywhere else. The file is still on its drive until you delete it from there.
+          </p>
+          <div className="flex gap-2">
+            <button
+              onClick={actions.restore}
+              className="flex-1 rounded border border-neutral-700 px-2 py-1 text-neutral-200 hover:bg-neutral-800"
+            >
+              Put Back
+            </button>
+            <button
+              onClick={actions.deleteFromDisk}
+              className="flex-1 rounded border border-red-900 px-2 py-1 text-red-300 hover:bg-red-950"
+            >
+              Delete from Drive…
+            </button>
+          </div>
+        </section>
+      ) : (
       <section>
         <Label>Album</Label>
         <select
@@ -254,7 +290,15 @@ export function Inspector({
             Remove from this album
           </button>
         )}
+        <button
+          onClick={actions.trash}
+          title="Hide in Shelf’s Trash. Nothing changes on the drive. (⌘⌫)"
+          className="mt-2 w-full rounded border border-neutral-700 px-2 py-1 text-neutral-300 hover:bg-neutral-800"
+        >
+          Move to Trash
+        </button>
       </section>
+      )}
 
       {single && (
         <section className="select-text">

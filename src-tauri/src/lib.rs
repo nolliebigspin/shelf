@@ -2,6 +2,7 @@ mod commands;
 mod db;
 mod media;
 mod scan;
+mod trash;
 mod volumes;
 
 use tauri::Manager;
@@ -36,7 +37,13 @@ pub fn run() {
             commands::add_to_album,
             commands::remove_from_album,
             commands::reveal,
-            commands::open_external
+            commands::open_external,
+            commands::trash_assets,
+            commands::restore_assets,
+            commands::trash_count,
+            commands::delete_from_disk,
+            commands::drag_icon,
+            commands::move_assets
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

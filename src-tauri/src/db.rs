@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS assets (
   display_name TEXT,                  -- your virtual name
   rating       INTEGER DEFAULT 0,     -- 0-5
   missing      INTEGER DEFAULT 0,     -- 1 = not found on last scan
+  trashed_at   INTEGER,               -- set while the clip is in Shelf's Trash
   UNIQUE(volume_id, rel_path)
 );
 
@@ -46,6 +47,16 @@ CREATE TABLE IF NOT EXISTS asset_tags  (asset_id INTEGER, tag_id INTEGER, PRIMAR
 CREATE TABLE IF NOT EXISTS albums      (id INTEGER PRIMARY KEY, name TEXT NOT NULL, created_at INTEGER);
 CREATE TABLE IF NOT EXISTS album_items (album_id INTEGER, asset_id INTEGER, position INTEGER,
                                         PRIMARY KEY (album_id, asset_id));
+
+-- Your hand-arranged order for a drive ('volume:<id>') or All clips ('all').
+-- Albums keep theirs in album_items.position. Clips without a row come after,
+-- in path order.
+CREATE TABLE IF NOT EXISTS view_order (
+  scope    TEXT NOT NULL,
+  asset_id INTEGER NOT NULL,
+  position INTEGER NOT NULL,
+  PRIMARY KEY (scope, asset_id)
+);
 
 -- Not in the original plan: the folders you added, so a rescan re-walks only those.
 CREATE TABLE IF NOT EXISTS roots (
@@ -105,12 +116,30 @@ pub fn open(app_data: &Path) -> Result<Db, String> {
     conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")
         .map_err(|e| e.to_string())?;
     conn.execute_batch(SCHEMA).map_err(|e| e.to_string())?;
+    migrate(&conn)?;
 
     Ok(Db {
         conn: Mutex::new(conn),
         db_path,
         thumbs_dir,
     })
+}
+
+/// Bring catalogs created by older versions up to the current SCHEMA.
+pub fn migrate(conn: &Connection) -> Result<(), String> {
+    let has_trashed: bool = conn
+        .query_row(
+            "SELECT count(*) FROM pragma_table_info('assets') WHERE name = 'trashed_at'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .map_err(|e| e.to_string())?
+        > 0;
+    if !has_trashed {
+        conn.execute_batch("ALTER TABLE assets ADD COLUMN trashed_at INTEGER")
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Serialize)]
@@ -130,6 +159,8 @@ pub struct Asset {
     pub display_name: Option<String>,
     pub rating: i64,
     pub missing: bool,
+    /// When the clip was moved to Shelf's Trash; None while it isn't there.
+    pub trashed_at: Option<i64>,
     /// True when the asset's drive is mounted right now.
     pub online: bool,
     /// mount_path + "/" + rel_path; only set while online.
@@ -146,6 +177,63 @@ pub struct AssetFilter {
     pub search: Option<String>,
     pub tag: Option<String>,
     pub min_rating: Option<i64>,
+    /// true lists only the Trash; otherwise trashed clips are left out.
+    pub trashed: Option<bool>,
+    /// "custom" (default), "name", "captured", "added", "size", "duration",
+    /// "rating", "kind" or "trashed".
+    pub sort: Option<String>,
+    pub descending: Option<bool>,
+}
+
+/// Which hand-arranged order a view uses.
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq)]
+pub struct OrderScope {
+    pub album_id: Option<i64>,
+    pub volume_id: Option<i64>,
+}
+
+const PATH_ORDER: &str = "v.label COLLATE NOCASE, a.rel_path COLLATE NOCASE";
+
+/// SQL for a clip's place in the scope's custom order (NULL when it has none).
+fn position_sql(scope: OrderScope) -> String {
+    match scope {
+        OrderScope { album_id: Some(id), .. } => format!(
+            "(SELECT position FROM album_items ai WHERE ai.album_id = {id} AND ai.asset_id = a.id)"
+        ),
+        OrderScope { volume_id: Some(v), .. } => format!(
+            "(SELECT position FROM view_order o WHERE o.scope = 'volume:{v}' AND o.asset_id = a.id)"
+        ),
+        _ => "(SELECT position FROM view_order o WHERE o.scope = 'all' AND o.asset_id = a.id)".to_owned(),
+    }
+}
+
+/// Custom order: arranged clips first, the rest in path order.
+fn custom_order_sql(scope: OrderScope, dir: &str) -> String {
+    let pos = position_sql(scope);
+    format!("{pos} IS NULL, {pos} {dir}, {PATH_ORDER}, a.id")
+}
+
+fn order_sql(filter: &AssetFilter) -> String {
+    let dir = if filter.descending == Some(true) { "DESC" } else { "ASC" };
+    let name = "COALESCE(a.display_name, a.file_name) COLLATE NOCASE";
+    let scope = OrderScope { album_id: filter.album_id, volume_id: filter.volume_id };
+    let key = match filter.sort.as_deref() {
+        Some("name") => format!("{name} {dir}"),
+        Some("captured") => format!("a.created_at IS NULL, a.created_at {dir}"),
+        Some("added") => format!("a.id {dir}"),
+        Some("size") => format!("a.size_bytes {dir}"),
+        Some("duration") => format!("a.duration_ms IS NULL, a.duration_ms {dir}"),
+        Some("rating") => format!("COALESCE(a.rating, 0) {dir}"),
+        Some("kind") => format!("a.kind {dir}, {name}"),
+        Some("trashed") => format!("a.trashed_at {dir}"),
+        // The Trash has no hand-arranged order; newest first unless asked otherwise.
+        _ if filter.trashed == Some(true) => {
+            let dir = if filter.descending == Some(false) { "ASC" } else { "DESC" };
+            format!("a.trashed_at {dir}")
+        }
+        _ => return custom_order_sql(scope, dir),
+    };
+    format!("{key}, {PATH_ORDER}, a.id")
 }
 
 fn like_pattern(term: &str) -> String {
@@ -156,6 +244,11 @@ fn like_pattern(term: &str) -> String {
 pub fn list_assets(conn: &Connection, filter: &AssetFilter) -> Result<Vec<Asset>, String> {
     let mut wheres: Vec<String> = Vec::new();
     let mut args: Vec<Box<dyn ToSql>> = Vec::new();
+    wheres.push(if filter.trashed == Some(true) {
+        "a.trashed_at IS NOT NULL".to_owned()
+    } else {
+        "a.trashed_at IS NULL".to_owned()
+    });
     let mut push = |clause: &str, arg: Box<dyn ToSql>| {
         args.push(arg);
         wheres.push(clause.replace("?", &format!("?{}", args.len())));
@@ -187,25 +280,16 @@ pub fn list_assets(conn: &Connection, filter: &AssetFilter) -> Result<Vec<Asset>
             Box::new(like_pattern(term)),
         );
     }
-    let where_sql = if wheres.is_empty() {
-        String::new()
-    } else {
-        format!("WHERE {}", wheres.join(" AND "))
-    };
-    // Inside an album, keep the order clips were added in.
-    let order_sql = match filter.album_id {
-        Some(id) => format!(
-            "(SELECT position FROM album_items ai WHERE ai.album_id = {id} AND ai.asset_id = a.id), a.id"
-        ),
-        None => "v.label COLLATE NOCASE, a.rel_path COLLATE NOCASE".to_owned(),
-    };
+    let where_sql = format!("WHERE {}", wheres.join(" AND "));
+    let order_sql = order_sql(filter);
     let sql = format!(
         "SELECT a.id, a.volume_id, a.rel_path, a.file_name, a.kind, a.size_bytes, a.duration_ms,
                 a.width, a.height, a.codec, a.created_at, a.thumb_path, a.display_name,
                 a.rating, a.missing, v.mount_path, v.label,
                 (SELECT group_concat(name, char(31)) FROM
                    (SELECT t.name FROM asset_tags x JOIN tags t ON t.id = x.tag_id
-                    WHERE x.asset_id = a.id ORDER BY t.name))
+                    WHERE x.asset_id = a.id ORDER BY t.name)),
+                a.trashed_at
          FROM assets a JOIN volumes v ON v.id = a.volume_id
          {where_sql} ORDER BY {order_sql}"
     );
@@ -233,6 +317,7 @@ pub fn list_assets(conn: &Connection, filter: &AssetFilter) -> Result<Vec<Asset>
                 display_name: r.get(12)?,
                 rating: r.get::<_, Option<i64>>(13)?.unwrap_or(0),
                 missing: r.get::<_, Option<i64>>(14)?.unwrap_or(0) != 0,
+                trashed_at: r.get(18)?,
                 online: mount_path.is_some(),
                 path,
                 rel_path,
@@ -346,7 +431,9 @@ pub struct Tag {
 pub fn list_tags(conn: &Connection) -> Result<Vec<Tag>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT t.id, t.name, (SELECT count(*) FROM asset_tags x WHERE x.tag_id = t.id)
+            "SELECT t.id, t.name,
+                    (SELECT count(*) FROM asset_tags x JOIN assets a ON a.id = x.asset_id
+                     WHERE x.tag_id = t.id AND a.trashed_at IS NULL)
              FROM tags t ORDER BY t.name",
         )
         .map_err(|e| e.to_string())?;
@@ -374,7 +461,8 @@ pub fn list_albums(conn: &Connection) -> Result<Vec<Album>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT b.id, b.name, b.created_at,
-                    (SELECT count(*) FROM album_items i WHERE i.album_id = b.id)
+                    (SELECT count(*) FROM album_items i JOIN assets a ON a.id = i.asset_id
+                     WHERE i.album_id = b.id AND a.trashed_at IS NULL)
              FROM albums b ORDER BY b.name COLLATE NOCASE",
         )
         .map_err(|e| e.to_string())?;
@@ -437,6 +525,124 @@ pub fn remove_from_album(conn: &mut Connection, album_id: i64, asset_ids: &[i64]
     tx.commit().map_err(|e| e.to_string())
 }
 
+/// Move clips to Shelf's Trash. Nothing on the drive changes; tags, rating and
+/// album membership are kept so Put Back restores them.
+pub fn trash_assets(conn: &mut Connection, asset_ids: &[i64], now: i64) -> Result<(), String> {
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    for id in asset_ids {
+        tx.execute(
+            "UPDATE assets SET trashed_at = ?1 WHERE id = ?2 AND trashed_at IS NULL",
+            params![now, id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    tx.commit().map_err(|e| e.to_string())
+}
+
+pub fn restore_assets(conn: &mut Connection, asset_ids: &[i64]) -> Result<(), String> {
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    for id in asset_ids {
+        tx.execute("UPDATE assets SET trashed_at = NULL WHERE id = ?1", [id])
+            .map_err(|e| e.to_string())?;
+    }
+    tx.commit().map_err(|e| e.to_string())
+}
+
+pub fn trash_count(conn: &Connection) -> Result<i64, String> {
+    conn.query_row("SELECT count(*) FROM assets WHERE trashed_at IS NOT NULL", [], |r| r.get(0))
+        .map_err(|e| e.to_string())
+}
+
+/// Drop clips from the catalog entirely (rows, tags, album entries). Tags no
+/// longer used anywhere go too. Returns the thumbnail files to clean up.
+pub fn forget_assets(conn: &mut Connection, asset_ids: &[i64]) -> Result<Vec<PathBuf>, String> {
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let mut thumbs = Vec::new();
+    for id in asset_ids {
+        let thumb: Option<Option<String>> = tx
+            .query_row("SELECT thumb_path FROM assets WHERE id = ?1", [id], |r| r.get(0))
+            .optional()
+            .map_err(|e| e.to_string())?;
+        thumbs.extend(thumb.flatten().map(PathBuf::from));
+        for sql in [
+            "DELETE FROM asset_tags WHERE asset_id = ?1",
+            "DELETE FROM album_items WHERE asset_id = ?1",
+            "DELETE FROM view_order WHERE asset_id = ?1",
+            "DELETE FROM assets WHERE id = ?1",
+        ] {
+            tx.execute(sql, [id]).map_err(|e| e.to_string())?;
+        }
+    }
+    tx.execute("DELETE FROM tags WHERE id NOT IN (SELECT tag_id FROM asset_tags)", [])
+        .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(thumbs)
+}
+
+/// Move `asset_ids` in the scope's custom order so they sit, in their current
+/// relative order, right before `before_id` (at the end when None). The whole
+/// scope is renumbered, including clips hidden by filters or in the Trash.
+pub fn move_assets(
+    conn: &mut Connection,
+    scope: OrderScope,
+    asset_ids: &[i64],
+    before_id: Option<i64>,
+) -> Result<(), String> {
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let (where_sql, arg) = match scope {
+        OrderScope { album_id: Some(id), .. } => (
+            "EXISTS (SELECT 1 FROM album_items ai WHERE ai.album_id = ?1 AND ai.asset_id = a.id)",
+            Some(id),
+        ),
+        OrderScope { volume_id: Some(v), .. } => ("a.volume_id = ?1", Some(v)),
+        _ => ("1", None),
+    };
+    let sql = format!(
+        "SELECT a.id FROM assets a JOIN volumes v ON v.id = a.volume_id
+         WHERE {where_sql} ORDER BY {}",
+        custom_order_sql(scope, "ASC")
+    );
+    let order: Vec<i64> = {
+        let mut stmt = tx.prepare(&sql).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params_from_iter(arg.iter()), |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<_, _>>().map_err(|e| e.to_string())?
+    };
+    let moving: std::collections::HashSet<i64> = asset_ids.iter().copied().collect();
+    let (moved, mut rest): (Vec<i64>, Vec<i64>) = order.into_iter().partition(|id| moving.contains(id));
+    let at = before_id
+        .and_then(|b| rest.iter().position(|id| *id == b))
+        .unwrap_or(rest.len());
+    rest.splice(at..at, moved);
+
+    match scope {
+        OrderScope { album_id: Some(album), .. } => {
+            let mut stmt = tx
+                .prepare("UPDATE album_items SET position = ?1 WHERE album_id = ?2 AND asset_id = ?3")
+                .map_err(|e| e.to_string())?;
+            for (i, id) in rest.iter().enumerate() {
+                stmt.execute(params![i as i64 + 1, album, id]).map_err(|e| e.to_string())?;
+            }
+        }
+        _ => {
+            let key = match scope.volume_id {
+                Some(v) => format!("volume:{v}"),
+                None => "all".to_owned(),
+            };
+            tx.execute("DELETE FROM view_order WHERE scope = ?1", [&key])
+                .map_err(|e| e.to_string())?;
+            let mut stmt = tx
+                .prepare("INSERT INTO view_order (scope, asset_id, position) VALUES (?1, ?2, ?3)")
+                .map_err(|e| e.to_string())?;
+            for (i, id) in rest.iter().enumerate() {
+                stmt.execute(params![key, id, i as i64 + 1]).map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    tx.commit().map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -453,7 +659,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(n, 7); // the plan's six + roots
+        assert_eq!(n, 8); // the plan's six + roots + view_order
     }
 
     fn catalog() -> Connection {
@@ -521,6 +727,125 @@ mod tests {
         remove_from_album(&mut conn, album, &[1]).unwrap();
         assert_eq!(ids(&conn, AssetFilter { album_id: Some(album), ..Default::default() }), [3, 2]);
         assert_eq!(ids(&conn, AssetFilter::default()).len(), 3); // clips stay in the catalog
+    }
+
+    #[test]
+    fn trash_hides_clips_everywhere_and_put_back_restores_them() {
+        let mut conn = catalog();
+        let album = create_album(&conn, "Reel", 0).unwrap();
+        add_to_album(&mut conn, album, &[3, 1, 2]).unwrap();
+        set_tags(&mut conn, &[1, 2], &["drone".into()], true).unwrap();
+
+        trash_assets(&mut conn, &[1], 100).unwrap();
+        assert_eq!(ids(&conn, AssetFilter::default()), [2, 3]);
+        assert_eq!(ids(&conn, AssetFilter { album_id: Some(album), ..Default::default() }), [3, 2]);
+        assert_eq!(ids(&conn, AssetFilter { tag: Some("drone".into()), ..Default::default() }), [2]);
+        assert_eq!(ids(&conn, AssetFilter { search: Some("beach".into()), ..Default::default() }), [2]);
+        let trash = list_assets(&conn, &AssetFilter { trashed: Some(true), ..Default::default() }).unwrap();
+        assert_eq!((trash.len(), trash[0].id, trash[0].trashed_at), (1, 1, Some(100)));
+        assert_eq!(trash_count(&conn).unwrap(), 1);
+        assert_eq!(list_albums(&conn).unwrap()[0].asset_count, 2);
+        assert_eq!(list_tags(&conn).unwrap()[0].asset_count, 1);
+
+        restore_assets(&mut conn, &[1]).unwrap();
+        assert_eq!(trash_count(&conn).unwrap(), 0);
+        assert_eq!(ids(&conn, AssetFilter { album_id: Some(album), ..Default::default() }), [3, 1, 2]);
+        assert_eq!(list_tags(&conn).unwrap()[0].asset_count, 2);
+    }
+
+    #[test]
+    fn forget_removes_join_rows_and_orphan_tags() {
+        let mut conn = catalog();
+        let album = create_album(&conn, "Reel", 0).unwrap();
+        add_to_album(&mut conn, album, &[1, 2]).unwrap();
+        set_tags(&mut conn, &[1], &["solo".into()], true).unwrap();
+        set_tags(&mut conn, &[1, 2], &["shared".into()], true).unwrap();
+        conn.execute("UPDATE assets SET thumb_path = '/t/1.jpg' WHERE id = 1", []).unwrap();
+
+        assert_eq!(forget_assets(&mut conn, &[1]).unwrap(), [PathBuf::from("/t/1.jpg")]);
+        assert_eq!(ids(&conn, AssetFilter::default()), [2, 3]);
+        let tags: Vec<String> = list_tags(&conn).unwrap().into_iter().map(|t| t.name).collect();
+        assert_eq!(tags, ["shared"]);
+        let n: i64 = conn
+            .query_row("SELECT count(*) FROM album_items WHERE asset_id = 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn migrate_adds_trashed_at_to_old_catalogs() {
+        let conn = Connection::open_in_memory().unwrap();
+        let old = SCHEMA.replace("  trashed_at   INTEGER,               -- set while the clip is in Shelf's Trash\n", "");
+        assert_ne!(old, SCHEMA);
+        conn.execute_batch(&old).unwrap();
+        migrate(&conn).unwrap();
+        migrate(&conn).unwrap();
+        conn.execute_batch("SELECT trashed_at FROM assets").unwrap();
+    }
+
+    #[test]
+    fn sort_options() {
+        let conn = catalog();
+        conn.execute_batch(
+            "UPDATE assets SET size_bytes = 30, created_at = 5, rating = 1, duration_ms = 900 WHERE id = 1;
+             UPDATE assets SET size_bytes = 10, created_at = 9, rating = 5, display_name = 'Aardvark' WHERE id = 2;
+             UPDATE assets SET size_bytes = 20, created_at = NULL, rating = 3, duration_ms = 100 WHERE id = 3;",
+        )
+        .unwrap();
+        let sorted = |sort: &str, desc: bool| {
+            ids(&conn, AssetFilter { sort: Some(sort.into()), descending: Some(desc), ..Default::default() })
+        };
+        assert_eq!(sorted("name", false), [3, 2, 1]); // "100%_city", "Aardvark", "beach_01"
+        assert_eq!(sorted("size", false), [2, 3, 1]);
+        assert_eq!(sorted("size", true), [1, 3, 2]);
+        assert_eq!(sorted("captured", false), [1, 2, 3]); // unknown dates last
+        assert_eq!(sorted("captured", true), [2, 1, 3]);
+        assert_eq!(sorted("rating", true), [2, 3, 1]);
+        assert_eq!(sorted("duration", false), [3, 1, 2]);
+        assert_eq!(sorted("added", true), [3, 2, 1]);
+        assert_eq!(sorted("bogus", false), [1, 2, 3]); // unknown keys fall back to custom/path
+    }
+
+    #[test]
+    fn custom_order_for_drive_all_and_album() {
+        let mut conn = catalog();
+        let drive = OrderScope { volume_id: Some(1), album_id: None };
+        let in_drive = |conn: &Connection| ids(conn, AssetFilter { volume_id: Some(1), ..Default::default() });
+        assert_eq!(in_drive(&conn), [1, 2, 3]); // path order until arranged
+        move_assets(&mut conn, drive, &[3], Some(1)).unwrap();
+        assert_eq!(in_drive(&conn), [3, 1, 2]);
+        move_assets(&mut conn, drive, &[3, 1], None).unwrap(); // keeps their relative order
+        assert_eq!(in_drive(&conn), [2, 3, 1]);
+        assert_eq!(ids(&conn, AssetFilter::default()), [1, 2, 3]); // All clips has its own order
+        assert_eq!(in_drive(&conn).len(), 3);
+
+        move_assets(&mut conn, OrderScope::default(), &[2], Some(1)).unwrap();
+        assert_eq!(ids(&conn, AssetFilter::default()), [2, 1, 3]);
+        // Descending custom order reverses the arranged part.
+        assert_eq!(
+            ids(&conn, AssetFilter { volume_id: Some(1), descending: Some(true), ..Default::default() }),
+            [1, 3, 2]
+        );
+
+        let album = create_album(&conn, "Reel", 0).unwrap();
+        add_to_album(&mut conn, album, &[1, 2, 3]).unwrap();
+        let scope = OrderScope { album_id: Some(album), volume_id: None };
+        move_assets(&mut conn, scope, &[3], Some(2)).unwrap();
+        assert_eq!(ids(&conn, AssetFilter { album_id: Some(album), ..Default::default() }), [1, 3, 2]);
+        // Moving before a clip that is itself moving lands at the end.
+        move_assets(&mut conn, scope, &[1], Some(1)).unwrap();
+        assert_eq!(ids(&conn, AssetFilter { album_id: Some(album), ..Default::default() }), [3, 2, 1]);
+        // New clips join an album at the end.
+        conn.execute(
+            "INSERT INTO assets (id, volume_id, rel_path, file_name, kind, size_bytes, mtime)
+             VALUES (4, 1, 'c/new.mov', 'new.mov', 'video', 1, 1)",
+            [],
+        )
+        .unwrap();
+        add_to_album(&mut conn, album, &[4]).unwrap();
+        assert_eq!(ids(&conn, AssetFilter { album_id: Some(album), ..Default::default() }), [3, 2, 1, 4]);
+        // ...and an unarranged clip comes after the arranged ones in a drive.
+        assert_eq!(in_drive(&conn), [2, 3, 1, 4]);
     }
 
     #[test]

@@ -2,7 +2,7 @@
 
 use crate::{
     db::{self, Db},
-    media, scan, volumes,
+    media, scan, trash, volumes,
 };
 use serde::Serialize;
 use tauri::{AppHandle, State};
@@ -150,4 +150,83 @@ pub fn reveal(db: State<'_, Db>, asset_id: i64) -> Result<(), String> {
 pub fn open_external(db: State<'_, Db>, asset_id: i64) -> Result<(), String> {
     let path = db::asset_path(&db.conn.lock().unwrap(), asset_id)?;
     tauri_plugin_opener::open_path(path, None::<&str>).map_err(|e| e.to_string())
+}
+
+/// Move clips to Shelf's Trash (catalog only; the files stay on the drive).
+#[tauri::command(async)]
+pub fn trash_assets(db: State<'_, Db>, asset_ids: Vec<i64>) -> Result<(), String> {
+    db::trash_assets(&mut db.conn.lock().unwrap(), &asset_ids, volumes::now())
+}
+
+/// Put clips back from the Trash with their tags, rating and albums.
+#[tauri::command(async)]
+pub fn restore_assets(db: State<'_, Db>, asset_ids: Vec<i64>) -> Result<(), String> {
+    db::restore_assets(&mut db.conn.lock().unwrap(), &asset_ids)
+}
+
+#[tauri::command(async)]
+pub fn trash_count(db: State<'_, Db>) -> Result<i64, String> {
+    db::trash_count(&db.conn.lock().unwrap())
+}
+
+/// Permanently delete trashed clips' files from their drives. The frontend
+/// asks for confirmation first; clips not in the Trash are never touched.
+#[tauri::command(async)]
+pub fn delete_from_disk(db: State<'_, Db>, asset_ids: Vec<i64>) -> Result<trash::DeleteReport, String> {
+    trash::delete_from_disk(&mut db.conn.lock().unwrap(), &asset_ids)
+}
+
+/// Width of the picture under the cursor while dragging clips, in points.
+const DRAG_ICON_W: u32 = 120;
+/// How see-through it is (0–255), so the drop target stays visible.
+const DRAG_ICON_ALPHA: u8 = 150;
+
+/// A small, translucent PNG of the first clip's thumbnail for the drag image,
+/// as a data URL. macOS adds the count badge itself when several files are dragged.
+#[tauri::command(async)]
+pub fn drag_icon(db: State<'_, Db>, asset_ids: Vec<i64>) -> Result<String, String> {
+    use base64::Engine;
+    use image::{imageops::FilterType, ImageFormat, Rgba};
+
+    let thumb = {
+        let conn = db.conn.lock().unwrap();
+        asset_ids.iter().find_map(|id| {
+            conn.query_row("SELECT thumb_path FROM assets WHERE id = ?1", [id], |r| {
+                r.get::<_, Option<String>>(0)
+            })
+            .ok()
+            .flatten()
+        })
+    }
+    .ok_or("no thumbnail to drag")?;
+    let src = image::open(&thumb).map_err(|e| e.to_string())?;
+    let h = (DRAG_ICON_W * src.height() / src.width().max(1)).clamp(1, DRAG_ICON_W);
+    let mut img = src.resize_exact(DRAG_ICON_W, h, FilterType::Triangle).to_rgba8();
+    let (w, h) = img.dimensions();
+    for (x, y, px) in img.enumerate_pixels_mut() {
+        // A thin light edge keeps the outline readable over dark UI.
+        if x == 0 || y == 0 || x == w - 1 || y == h - 1 {
+            *px = Rgba([255, 255, 255, 200]);
+        } else {
+            px.0[3] = DRAG_ICON_ALPHA;
+        }
+    }
+    let mut png = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut png, ImageFormat::Png).map_err(|e| e.to_string())?;
+    Ok(format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(png.into_inner())
+    ))
+}
+
+/// Rearrange clips by hand in an album, a drive or All clips: `asset_ids` go
+/// right before `before_id` (or to the end).
+#[tauri::command(async)]
+pub fn move_assets(
+    db: State<'_, Db>,
+    scope: db::OrderScope,
+    asset_ids: Vec<i64>,
+    before_id: Option<i64>,
+) -> Result<(), String> {
+    db::move_assets(&mut db.conn.lock().unwrap(), scope, &asset_ids, before_id)
 }

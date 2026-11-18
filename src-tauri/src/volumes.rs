@@ -143,7 +143,8 @@ pub fn list(conn: &Connection) -> Result<Vec<Volume>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT v.id, v.uuid, v.label, v.mount_path,
-                    (SELECT count(*) FROM assets a WHERE a.volume_id = v.id AND a.missing = 0)
+                    (SELECT count(*) FROM assets a WHERE a.volume_id = v.id AND a.missing = 0
+                       AND a.trashed_at IS NULL)
              FROM volumes v ORDER BY v.label COLLATE NOCASE",
         )
         .map_err(|e| e.to_string())?;
