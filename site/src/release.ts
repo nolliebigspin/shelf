@@ -1,10 +1,17 @@
 export const repo = "nolliebigspin/shelf";
 export const repoUrl = `https://github.com/${repo}`;
 
-// The release workflow uploads the disk image a second time under this fixed name,
-// so GitHub's /releases/latest/download/ link always serves the newest version
+// The release workflow uploads each installer a second time under a fixed name,
+// so GitHub's /releases/latest/download/ links always serve the newest version
 // without touching the site.
-export const downloadUrl = `${repoUrl}/releases/latest/download/Shelf_universal.dmg`;
+const latest = (file: string) => `${repoUrl}/releases/latest/download/${file}`;
+
+export const downloads = {
+  mac: { name: "Mac", url: latest("Shelf_universal.dmg"), note: "Apple Silicon and Intel" },
+  windows: { name: "Windows", url: latest("Shelf_windows_x64-setup.exe"), note: "Windows 10 and 11" },
+  linux: { name: "Linux", url: latest("Shelf_linux_amd64.AppImage"), note: "x64 AppImage" },
+} as const;
+export const debUrl = latest("Shelf_linux_amd64.deb");
 
 /**
  * Newest release version (e.g. "0.2.0"), read at build time from where

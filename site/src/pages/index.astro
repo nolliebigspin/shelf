@@ -2,7 +2,7 @@
 import "@fontsource-variable/bricolage-grotesque";
 import "@fontsource-variable/figtree";
 import Analytics from "@vercel/analytics/astro";
-import { latestVersion, repo, repoUrl, downloadUrl } from "../release";
+import { debUrl, downloads, latestVersion, repo, repoUrl } from "../release";
 
 // Shown next to the download button. The link itself always serves the newest
 // release; a script below refreshes this label in case the site was built earlier.
@@ -33,7 +33,7 @@ const features = [
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <Analytics />
-    <title>Shelf, a media catalog for Mac that leaves your files alone</title>
+    <title>Shelf, a media catalog for Mac, Windows and Linux that leaves your files alone</title>
     <meta
       name="description"
       content="Shelf scans a folder or SSD, shows every clip as a thumbnail, and lets you name, tag, rate and group clips into albums. It never moves, renames or changes a file, and only deletes one when you empty its Trash."
@@ -49,12 +49,22 @@ const features = [
       <section class="wrap hero">
         <h1>Your footage stays on the drive. Shelf keeps track of it.</h1>
         <p class="lede">
-          Shelf is a Mac app that scans a folder or an SSD, shows every clip as a thumbnail, and lets
+          Shelf is an app for Mac, Windows and Linux that scans a folder or an SSD, shows every clip as a thumbnail, and lets
           you name, tag, rate and group clips into albums. It never moves, renames or changes a file, and only deletes one when you empty its Trash.
         </p>
         <div class="cta">
-          <a class="button" href={downloadUrl}>Download Shelf for Mac</a>
-          <p class="fine"><span data-version>{version ? `Version ${version}` : "Latest version"}</span>, for Apple Silicon and Intel Macs. Free. Needs ffmpeg, see <a href="#install">Install</a>.</p>
+          <!-- Mac by default; the script below picks the visitor's system. -->
+          <a class="button" href={downloads.mac.url} data-primary-download>Download Shelf for <span data-os-name>Mac</span></a>
+          <p class="fine">
+            <span data-version>{version ? `Version ${version}` : "Latest version"}</span>, <span data-os-note>{downloads.mac.note}</span>. Free. Needs ffmpeg, see <a href="#install">Install</a>.
+          </p>
+          <p class="fine other-downloads">
+            Also for{" "}
+            <span class="links">
+              {Object.entries(downloads).map(([os, d]) => <a href={d.url} data-download={os}>{d.name}</a>)}
+              <a href={debUrl}>Linux .deb</a>
+            </span>
+          </p>
         </div>
       </section>
 
@@ -101,10 +111,10 @@ const features = [
         <div class="wrap">
           <h2>What it will not do</h2>
           <ul class="never">
-            <li><strong>Write to your drive.</strong> Shelf opens media read-only. It does not move, rename, delete or modify anything on a drive it scans.</li>
-            <li><strong>Leave files next to your footage.</strong> Thumbnails and the catalog live in the app's own folder on your Mac.</li>
+            <li><strong>Write to your drive.</strong> Shelf opens media read-only. It never moves, renames or modifies a file, and deletes one only when you empty its Trash and confirm.</li>
+            <li><strong>Leave files next to your footage.</strong> Thumbnails and the catalog live in the app's own folder on your computer.</li>
             <li><strong>Lose track when a drive is renamed.</strong> Shelf recognises a drive by its volume ID, so a new name or mount point changes nothing.</li>
-            <li><strong>Remove files.</strong> Taking a clip out of an album only changes the album.</li>
+            <li><strong>Remove files behind your back.</strong> Taking a clip out of an album only changes the album, and Move to Trash only hides it in Shelf.</li>
           </ul>
         </div>
       </section>
@@ -114,18 +124,30 @@ const features = [
         <ol class="steps">
           <li>
             <h3>Install ffmpeg</h3>
-            <p>Shelf uses ffmpeg to read metadata and make thumbnails. With <a href="https://brew.sh">Homebrew</a>, run this in Terminal:</p>
+            <p>Shelf uses ffmpeg to read metadata and make thumbnails.</p>
+            <p class="os"><strong>Mac</strong>, with <a href="https://brew.sh">Homebrew</a> in Terminal:</p>
             <pre><code>brew install ffmpeg</code></pre>
+            <p class="os"><strong>Windows</strong>, in PowerShell or Terminal:</p>
+            <pre><code>winget install Gyan.FFmpeg</code></pre>
+            <p class="os"><strong>Linux</strong>: the .deb installs it for you. Otherwise use your package manager, for example:</p>
+            <pre><code>sudo apt install ffmpeg</code></pre>
           </li>
           <li>
-            <h3>Download and copy</h3>
-            <p><a href={downloadUrl}>Download the disk image</a>, open it, and drag Shelf into Applications.</p>
+            <h3>Download and install</h3>
+            <p class="os"><strong>Mac</strong>: <a href={downloads.mac.url}>download the disk image</a>, open it, and drag Shelf into Applications.</p>
+            <p class="os"><strong>Windows</strong>: <a href={downloads.windows.url}>download the installer</a> and run it.</p>
+            <p class="os"><strong>Linux</strong>: <a href={downloads.linux.url}>download the AppImage</a>, make it executable and run it, or install the <a href={debUrl}>.deb</a>:</p>
+            <pre><code>chmod +x Shelf_linux_amd64.AppImage && ./Shelf_linux_amd64.AppImage</code></pre>
           </li>
           <li>
             <h3>Open Shelf</h3>
-            <p>
-              Shelf is signed and notarized by Apple. The first time you open it, macOS asks you to
-              confirm that it came from the internet. Choose Open.
+            <p class="os">
+              <strong>Mac</strong>: Shelf is signed and notarized by Apple. The first time you open it,
+              macOS asks you to confirm that it came from the internet. Choose Open.
+            </p>
+            <p class="os">
+              <strong>Windows</strong>: the installer isn't code-signed yet, so SmartScreen may warn
+              you. Choose More info, then Run anyway.
             </p>
           </li>
         </ol>
@@ -138,6 +160,18 @@ const features = [
       <a href={repoUrl}>Source on GitHub</a>
       <a href={`${repoUrl}/issues`}>Report a problem</a>
     </footer>
+
+    <script is:inline define:vars={{ downloads }}>
+      // Offer the visitor's own system first.
+      const ua = navigator.userAgent;
+      const os = /Windows/i.test(ua) ? "windows" : /Linux|X11/i.test(ua) && !/Android/i.test(ua) ? "linux" : "mac";
+      const d = downloads[os];
+      const button = document.querySelector("[data-primary-download]");
+      button.href = d.url;
+      button.querySelector("[data-os-name]").textContent = d.name;
+      document.querySelector("[data-os-note]").textContent = d.note;
+      document.querySelector(`[data-download="${os}"]`)?.remove();
+    </script>
 
     <script is:inline define:vars={{ repo }}>
       // Keep the version label current between site deploys.
@@ -588,6 +622,26 @@ const features = [
 
   .steps p {
     margin: 0.4rem 0 0;
+    color: var(--mist);
+  }
+
+  .steps p.os {
+    margin-top: 0.9rem;
+  }
+
+  .steps p.os strong {
+    color: var(--chalk);
+    font-weight: 600;
+  }
+
+  .other-downloads {
+    margin-top: 0.35rem;
+  }
+
+  .other-downloads .links > a + a::before {
+    content: "·";
+    display: inline-block; /* keeps the dot out of the link underline */
+    margin: 0 0.45em;
     color: var(--mist);
   }
 
