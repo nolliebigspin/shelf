@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Shelf",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "identifier": "com.alec.assetmanager",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -41,7 +41,9 @@
       "icons/icon.ico"
     ],
     "macOS": {
-      "signingIdentity": "-"
+      "signingIdentity": "Developer ID Application: Alec Winter (74H6Q6Y6VF)",
+      "hardenedRuntime": true,
+      "minimumSystemVersion": "11.0"
     }
   }
 }
