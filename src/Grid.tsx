@@ -12,7 +12,24 @@ const PAD = 12;
 const LABEL_H = 26;
 const ROW_H = 44; // list layout
 
-export interface ClipViewProps {
+/** Cards per row in the grid right now, so ↑ / ↓ can move a whole row. */
+export const gridMetrics = { columns: 1 };
+
+/** Scroll the clip the keyboard just moved to into view. */
+function useScrollToFocus(assets: Asset[], scrollTo: (index: number) => void) {
+  const focus = useSelection((s) => s.focus);
+  const assetsRef = useRef(assets);
+  assetsRef.current = assets;
+  const scrollRef = useRef(scrollTo);
+  scrollRef.current = scrollTo;
+  useEffect(() => {
+    if (!focus) return;
+    const i = assetsRef.current.findIndex((a) => a.id === focus.id);
+    if (i >= 0) scrollRef.current(i);
+  }, [focus]);
+}
+
+interface ClipViewProps {
   assets: Asset[];
   /** Right-click on a clip; the clip is selected first unless it already is. */
   onContextMenu: () => void;
@@ -194,6 +211,7 @@ export function Grid({ assets, onContextMenu, dragConfig }: ClipViewProps) {
   const cardW = (inner - GAP * (columns - 1)) / columns;
   const rowH = Math.round((cardW * 9) / 16) + LABEL_H + GAP;
   const rowCount = Math.ceil(assets.length / columns);
+  gridMetrics.columns = columns;
 
   const virtualizer = useVirtualizer({
     count: rowCount,
@@ -202,6 +220,7 @@ export function Grid({ assets, onContextMenu, dragConfig }: ClipViewProps) {
     overscan: 4,
   });
   useEffect(() => virtualizer.measure(), [rowH, virtualizer]);
+  useScrollToFocus(assets, (i) => virtualizer.scrollToIndex(Math.floor(i / columns), { align: "auto" }));
 
   return (
     <div ref={scrollRef} className="h-full overflow-y-auto" onClick={() => useSelection.getState().clear()}>
@@ -365,6 +384,7 @@ export function ClipList({
     estimateSize: () => ROW_H,
     overscan: 8,
   });
+  useScrollToFocus(assets, (i) => virtualizer.scrollToIndex(i, { align: "auto" }));
 
   const header = (label: string, key: SortKey | undefined, align?: "right") => (
     <button

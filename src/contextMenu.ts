@@ -1,7 +1,7 @@
 import { Menu, MenuItem, PredefinedMenuItem, Submenu } from "@tauri-apps/api/menu";
 import type { Album, Asset } from "./api";
 
-export interface ClipMenuActions {
+interface ClipMenuActions {
   reveal: (id: number) => void;
   openExternal: (id: number) => void;
   addToAlbum: (albumId: number) => void;

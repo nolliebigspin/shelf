@@ -43,6 +43,7 @@ function NameField({ asset, onRename }: { asset: Asset; onRename: (name: string)
   };
   return (
     <input
+      id="display-name"
       value={value}
       placeholder={asset.file_name}
       onChange={(e) => setValue(e.target.value)}
@@ -54,7 +55,7 @@ function NameField({ asset, onRename }: { asset: Asset; onRename: (name: string)
           e.currentTarget.blur();
         }
       }}
-      className="w-full rounded border border-neutral-700 bg-neutral-950 px-2 py-1 text-neutral-100 outline-none select-text placeholder:text-neutral-600 focus:border-sky-500"
+      className="control w-full select-text placeholder:text-neutral-600"
     />
   );
 }
@@ -72,13 +73,13 @@ function TagInput({ onAdd }: { onAdd: (names: string[]) => void }) {
         if (names.length) onAdd(names);
         setValue("");
       }}
-      className="w-full rounded border border-neutral-700 bg-neutral-950 px-2 py-1 text-neutral-100 outline-none select-text placeholder:text-neutral-600 focus:border-sky-500"
+      className="control w-full select-text placeholder:text-neutral-600"
     />
   );
 }
 
 /** Containers the built-in player handles (H.264, HEVC, ProRes inside mp4/mov/m4v). */
-export function isPlayable(asset: Asset): boolean {
+function isPlayable(asset: Asset): boolean {
   return (
     asset.kind === "video" &&
     asset.online &&
@@ -184,14 +185,14 @@ export function Inspector({
             <button
               disabled={!available}
               onClick={() => actions.reveal(single.id)}
-              className="flex-1 rounded border border-neutral-700 px-2 py-1 text-neutral-200 hover:bg-neutral-800 disabled:text-neutral-600 disabled:hover:bg-transparent"
+              className="flex-1 h-7 rounded border border-neutral-700 px-2 text-neutral-200 hover:bg-neutral-800 disabled:text-neutral-600 disabled:hover:bg-transparent"
             >
               Reveal in Finder
             </button>
             <button
               disabled={!available}
               onClick={() => actions.openExternal(single.id)}
-              className="flex-1 rounded border border-neutral-700 px-2 py-1 text-neutral-200 hover:bg-neutral-800 disabled:text-neutral-600 disabled:hover:bg-transparent"
+              className="flex-1 h-7 rounded border border-neutral-700 px-2 text-neutral-200 hover:bg-neutral-800 disabled:text-neutral-600 disabled:hover:bg-transparent"
             >
               Open externally
             </button>
@@ -254,13 +255,13 @@ export function Inspector({
           <div className="flex gap-2">
             <button
               onClick={actions.restore}
-              className="flex-1 rounded border border-neutral-700 px-2 py-1 text-neutral-200 hover:bg-neutral-800"
+              className="flex-1 h-7 rounded border border-neutral-700 px-2 text-neutral-200 hover:bg-neutral-800"
             >
               Put Back
             </button>
             <button
               onClick={actions.deleteFromDisk}
-              className="flex-1 rounded border border-red-900 px-2 py-1 text-red-300 hover:bg-red-950"
+              className="flex-1 h-7 rounded border border-red-900 px-2 text-red-300 hover:bg-red-950"
             >
               Delete from Drive…
             </button>
@@ -273,7 +274,7 @@ export function Inspector({
           value=""
           disabled={albums.length === 0}
           onChange={(e) => e.target.value && actions.addToAlbum(Number(e.target.value))}
-          className="w-full rounded border border-neutral-700 bg-neutral-950 px-2 py-1 text-neutral-100 outline-none disabled:text-neutral-600"
+          className="control control-select w-full disabled:text-neutral-600"
         >
           <option value="">{albums.length === 0 ? "No albums yet" : "Add to album…"}</option>
           {albums.map((a) => (
@@ -285,7 +286,7 @@ export function Inspector({
         {actions.removeFromAlbum && (
           <button
             onClick={actions.removeFromAlbum}
-            className="mt-2 w-full rounded border border-neutral-700 px-2 py-1 text-neutral-300 hover:bg-neutral-800"
+            className="mt-2 w-full h-7 rounded border border-neutral-700 px-2 text-neutral-300 hover:bg-neutral-800"
           >
             Remove from this album
           </button>
@@ -293,7 +294,7 @@ export function Inspector({
         <button
           onClick={actions.trash}
           title="Hide in Shelf’s Trash. Nothing changes on the drive. (⌘⌫)"
-          className="mt-2 w-full rounded border border-neutral-700 px-2 py-1 text-neutral-300 hover:bg-neutral-800"
+          className="mt-2 w-full h-7 rounded border border-neutral-700 px-2 text-neutral-300 hover:bg-neutral-800"
         >
           Move to Trash
         </button>

@@ -4,8 +4,43 @@ use crate::{
     db::{self, Db},
     media, scan, trash, volumes,
 };
+use rusqlite::Connection;
 use serde::Serialize;
-use tauri::{AppHandle, State};
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use tauri::{AppHandle, Manager, State};
+
+/// Folders the webview may already load media from (see `allow_media_roots`).
+#[derive(Default)]
+pub struct AllowedRoots(Mutex<HashSet<PathBuf>>);
+
+/// Let the player and preview load files from every added folder on a mounted
+/// drive. tauri.conf.json only covers /Volumes/** and the app data folder, so
+/// folders on the startup disk (e.g. ~/Downloads) would otherwise be refused.
+/// Only the folders you added are opened up, never the whole disk.
+pub fn allow_media_roots(app: &AppHandle, conn: &Connection) {
+    let dirs: Vec<PathBuf> = conn
+        .prepare(
+            "SELECT v.mount_path, r.rel_path FROM roots r JOIN volumes v ON v.id = r.volume_id
+             WHERE v.mount_path IS NOT NULL",
+        )
+        .and_then(|mut stmt| {
+            stmt.query_map([], |r| {
+                Ok(Path::new(&r.get::<_, String>(0)?).join(r.get::<_, String>(1)?))
+            })?
+            .collect()
+        })
+        .unwrap_or_default();
+    let allowed = app.state::<AllowedRoots>();
+    let mut seen = allowed.0.lock().unwrap();
+    let scope = app.asset_protocol_scope();
+    for dir in dirs {
+        if !seen.contains(&dir) && scope.allow_directory(&dir, true).is_ok() {
+            seen.insert(dir);
+        }
+    }
+}
 
 #[derive(Serialize)]
 pub struct AppStatus {
@@ -50,6 +85,7 @@ pub fn add_root(app: AppHandle, db: State<'_, Db>, path: String) -> Result<i64, 
         let conn = db.conn.lock().unwrap();
         let id = volumes::upsert(&conn, &info)?;
         db::add_root(&conn, id, &root_rel)?;
+        allow_media_roots(&app, &conn);
         id
     };
     scan::start(app, volume_id, info.mount_path, vec![root])?;
@@ -79,10 +115,12 @@ pub fn rescan(app: AppHandle, db: State<'_, Db>, volume_id: i64) -> Result<(), S
 
 /// Match mounted drives to known UUIDs, update mount paths, return all volumes.
 #[tauri::command(async)]
-pub fn refresh_volumes(db: State<'_, Db>) -> Result<Vec<volumes::Volume>, String> {
+pub fn refresh_volumes(app: AppHandle, db: State<'_, Db>) -> Result<Vec<volumes::Volume>, String> {
     let mounted = volumes::mounted();
     let conn = db.conn.lock().unwrap();
     volumes::apply_mounted(&conn, &mounted)?;
+    // A drive plugged in (or mounted under a new name) needs its folders allowed.
+    allow_media_roots(&app, &conn);
     volumes::list(&conn)
 }
 

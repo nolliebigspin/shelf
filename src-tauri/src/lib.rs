@@ -14,9 +14,11 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_drag::init())
         .manage(scan::ScanState::default())
+        .manage(commands::AllowedRoots::default())
         .setup(|app| {
             let app_data = app.path().app_data_dir()?;
             let db = db::open(&app_data)?;
+            commands::allow_media_roots(app.handle(), &db.conn.lock().unwrap());
             app.manage(db);
             // Pick up thumbnails an earlier run didn't finish, off the main thread.
             let handle = app.handle().clone();

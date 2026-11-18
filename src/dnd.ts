@@ -21,7 +21,7 @@ export type DropTarget =
   /** Over the clips while the current sort can't be rearranged by hand. */
   | { kind: "no-reorder" };
 
-export interface DragSession {
+interface DragSession {
   ids: number[];
   /** Thumbnail URL of the clip under the pointer, for the ghost. */
   thumb: string | null;

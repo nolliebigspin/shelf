@@ -34,109 +34,31 @@ import {
   type Tag,
   type Volume,
 } from "./api";
-import { ClipList, Grid } from "./Grid";
-import { registerGhost, useDnd, type DragConfig, type DropTarget } from "./dnd";
+import { ClipList, Grid, gridMetrics } from "./Grid";
+import { useDnd, type DragConfig, type DropTarget } from "./dnd";
 import { formatBytes } from "./format";
 import { Inspector, type InspectorActions } from "./Inspector";
 import { clamp, ResizeHandle, usePanelWidth, useWindowWidth } from "./ResizeHandle";
 import { showClipMenu } from "./contextMenu";
 import { useSelection } from "./store";
+import { DragGhost, ShortcutsHelp } from "./Overlays";
+import {
+  defaultSort,
+  DESC_FIRST,
+  readJson,
+  sortKeysFor,
+  SORT_LABELS,
+  viewKey,
+  writeJson,
+  type Layout,
+  type Sort,
+  type View,
+} from "./view";
 
 const LEFT = { initial: 224, min: 180, max: 400 };
 const RIGHT = { initial: 288, min: 260 };
 /** The grid keeps at least this much room between the panels. */
 const MIN_GRID = 320;
-
-type View =
-  | { kind: "all" }
-  | { kind: "trash" }
-  | { kind: "volume"; id: number }
-  | { kind: "album"; id: number }
-  | { kind: "tag"; name: string };
-
-type Sort = { key: SortKey; desc: boolean };
-type Layout = "grid" | "list";
-
-const SORT_LABELS: Record<SortKey, string> = {
-  custom: "Custom",
-  name: "Name",
-  captured: "Date captured",
-  added: "Date added",
-  size: "Size",
-  duration: "Duration",
-  rating: "Rating",
-  kind: "Kind",
-  trashed: "Date trashed",
-};
-
-/** Albums, drives and All clips can be arranged by hand. */
-const hasCustomOrder = (v: View) => v.kind === "all" || v.kind === "volume" || v.kind === "album";
-const viewKey = (v: View) =>
-  v.kind === "volume" || v.kind === "album" ? `${v.kind}:${v.id}` : v.kind === "tag" ? "tag" : v.kind;
-const sortKeysFor = (v: View): SortKey[] =>
-  (Object.keys(SORT_LABELS) as SortKey[]).filter(
-    (k) => (k !== "custom" || hasCustomOrder(v)) && (k !== "trashed" || v.kind === "trash"),
-  );
-const defaultSort = (v: View): Sort =>
-  v.kind === "trash"
-    ? { key: "trashed", desc: true }
-    : hasCustomOrder(v)
-      ? { key: "custom", desc: false }
-      : { key: "name", desc: false };
-/** Dates, sizes and ratings read best biggest/newest first. */
-const DESC_FIRST: SortKey[] = ["captured", "added", "size", "duration", "rating", "trashed"];
-
-function readJson<T>(key: string, fallback: T): T {
-  try {
-    const raw = localStorage.getItem(key);
-    return raw ? (JSON.parse(raw) as T) : fallback;
-  } catch {
-    return fallback;
-  }
-}
-function writeJson(key: string, value: unknown) {
-  try {
-    localStorage.setItem(key, JSON.stringify(value));
-  } catch {
-    // Not remembered; harmless.
-  }
-}
-
-/** The floating preview next to the cursor while clips are dragged inside the window. */
-function DragGhost() {
-  const drag = useDnd((s) => s.drag);
-  const blocked = useDnd((s) => s.target?.kind === "no-reorder");
-  return (
-    <div ref={registerGhost} className="pointer-events-none fixed left-0 top-0 z-50">
-      {drag && (
-        <div className="flex flex-col items-start gap-1">
-          <div className="relative">
-            {drag.ids.length > 1 && (
-              <div className="absolute left-1.5 top-1.5 h-10 w-[72px] rounded bg-neutral-700 ring-1 ring-neutral-500" />
-            )}
-            <div className="relative h-10 w-[72px] overflow-hidden rounded bg-neutral-900 opacity-90 shadow-lg ring-1 ring-sky-400">
-              {drag.thumb && <img src={drag.thumb} alt="" className="h-full w-full object-cover" />}
-            </div>
-            {drag.ids.length > 1 && (
-              <span className="absolute -right-2.5 -top-2 rounded-full bg-sky-500 px-1.5 text-[11px] font-semibold tabular-nums text-white shadow">
-                {drag.ids.length}
-              </span>
-            )}
-          </div>
-          {drag.label && (
-            <span
-              className={`whitespace-nowrap rounded px-1.5 py-0.5 text-[11px] shadow ${
-                blocked ? "bg-neutral-800 text-amber-300" : "bg-sky-500 text-white"
-              }`}
-            >
-              {drag.label}
-            </span>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
 
 function StatusLine({ status, error }: { status: AppStatus | null; error: string | null }) {
   if (error) return <span className="text-red-400">Backend error: {error}</span>;
@@ -582,15 +504,66 @@ export default function App() {
     });
   };
 
-  // Keyboard: 1–5 rate, 0 clear, Space play/pause, ⌘A select all, Esc deselect,
-  // ⌘⌫ / Delete move to Trash (never deletes from a drive). Ignored while typing.
-  const inTrashRef = useRef(inTrash);
-  inTrashRef.current = inTrash;
+  // Keyboard shortcuts (listed in SHORTCUTS / the "?" overlay). Ignored while typing.
+  // ⌘⌫ never deletes from a drive: it trashes, or puts back inside the Trash.
+  const [showKeys, setShowKeys] = useState(false);
+  const keyState = useRef({ inTrash, layout, showKeys, actions });
+  keyState.current = { inTrash, layout, showKeys, actions };
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const el = e.target as HTMLElement | null;
       if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT")) return;
-      if (e.metaKey && e.key.toLowerCase() === "a") {
+      const { inTrash, layout, showKeys, actions } = keyState.current;
+      const key = e.key.toLowerCase();
+      const order = () => assetsRef.current.map((a) => a.id);
+      const sel = useSelection.getState();
+      const single = sel.selected.size === 1 ? assetsRef.current.find((a) => sel.selected.has(a.id)) : undefined;
+      const arrows: Record<string, number> = {
+        ArrowLeft: layout === "grid" ? -1 : 0,
+        ArrowRight: layout === "grid" ? 1 : 0,
+        ArrowUp: layout === "grid" ? -gridMetrics.columns : -1,
+        ArrowDown: layout === "grid" ? gridMetrics.columns : 1,
+        Home: -Infinity,
+        End: Infinity,
+      };
+      if (showKeys) {
+        if (e.key === "Escape" || e.key === "?") {
+          e.preventDefault();
+          setShowKeys(false);
+        }
+        return;
+      }
+      if (e.key in arrows && !e.altKey && !e.ctrlKey) {
+        let delta = arrows[e.key];
+        if (e.metaKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) delta = e.key === "ArrowUp" ? -Infinity : Infinity;
+        if (delta === 0) return;
+        e.preventDefault();
+        if (el?.tagName === "BUTTON") el.blur();
+        sel.step(order(), delta, e.shiftKey);
+      } else if (e.key === "?") {
+        e.preventDefault();
+        setShowKeys(true);
+      } else if (e.key === "Enter" && !e.metaKey && single) {
+        if (el?.tagName === "BUTTON") return; // Return activates a focused button as usual
+        e.preventDefault();
+        const field = document.getElementById("display-name") as HTMLInputElement | null;
+        field?.focus();
+        field?.select();
+      } else if (e.metaKey && key === "o") {
+        e.preventDefault();
+        if (single?.online && !single.missing) actions.openExternal(single.id);
+      } else if (e.metaKey && key === "r") {
+        e.preventDefault();
+        if (single?.online && !single.missing) actions.reveal(single.id);
+      } else if (e.metaKey && key === "f") {
+        e.preventDefault();
+        const search = document.getElementById("search") as HTMLInputElement | null;
+        search?.focus();
+        search?.select();
+      } else if (e.metaKey && (e.key === "1" || e.key === "2")) {
+        e.preventDefault();
+        setLayout(e.key === "1" ? "grid" : "list");
+      } else if (e.metaKey && key === "a") {
         e.preventDefault();
         useSelection.getState().selectAll(assetsRef.current.map((a) => a.id));
       } else if (e.key === " ") {
@@ -605,7 +578,9 @@ export default function App() {
         useSelection.getState().clear();
       } else if ((e.key === "Backspace" && e.metaKey) || e.key === "Delete") {
         e.preventDefault();
-        if (!inTrashRef.current) trashSelected();
+        if (sel.selected.size === 0) return;
+        if (inTrash) actions.restore();
+        else trashSelected();
       } else if (!e.metaKey && !e.ctrlKey && !e.altKey && /^[0-5]$/.test(e.key)) {
         e.preventDefault();
         rate(Number(e.key));
@@ -764,14 +739,26 @@ export default function App() {
               value={searchInput}
               placeholder="Search names and tags"
               onChange={(e) => setSearchInput(e.target.value)}
-              onKeyDown={(e) => e.key === "Escape" && setSearchInput("")}
-              className="w-64 min-w-32 shrink rounded border border-neutral-700 bg-neutral-950 px-2 py-1 text-neutral-100 outline-none select-text placeholder:text-neutral-600 focus:border-sky-500"
+              onKeyDown={(e) => {
+                if (e.key === "Escape") {
+                  if (searchInput) setSearchInput("");
+                  else e.currentTarget.blur();
+                } else if (e.key === "ArrowDown" || e.key === "Enter") {
+                  // Leave the field and continue with the arrow keys in the clips.
+                  e.preventDefault();
+                  e.currentTarget.blur();
+                  useSelection.getState().step(assetsRef.current.map((a) => a.id), 1, false);
+                }
+              }}
+              id="search"
+              className="control w-64 min-w-32 shrink select-text placeholder:text-neutral-600"
             />
             <select
               value={minRating}
               onChange={(e) => setMinRating(Number(e.target.value))}
               title="Minimum rating"
-              className="rounded border border-neutral-700 bg-neutral-950 px-2 py-1 text-neutral-100 outline-none"
+              aria-label="Minimum rating"
+              className="control control-select shrink-0"
             >
               <option value={0}>Any rating</option>
               {[1, 2, 3, 4, 5].map((n) => (
@@ -787,7 +774,7 @@ export default function App() {
                 onChange={(e) => setSort({ key: e.target.value as SortKey, desc: DESC_FIRST.includes(e.target.value as SortKey) })}
                 title="Sort by"
                 aria-label="Sort by"
-                className="rounded-l border border-neutral-700 bg-neutral-950 px-2 py-1 text-neutral-100 outline-none"
+                className="control control-select relative rounded-r-none focus:z-10"
               >
                 {sortKeysFor(view).map((k) => (
                   <option key={k} value={k}>
@@ -798,19 +785,20 @@ export default function App() {
               <button
                 onClick={() => setSort({ ...sort, desc: !sort.desc })}
                 title={sort.desc ? "Descending: click for ascending" : "Ascending: click for descending"}
-                className="-ml-px rounded-r border border-neutral-700 bg-neutral-950 px-2 py-1 text-neutral-300 hover:text-neutral-100"
+                aria-label={sort.desc ? "Descending" : "Ascending"}
+                className="control -ml-px w-7 rounded-l-none px-0 text-neutral-300 hover:text-neutral-100"
               >
                 {sort.desc ? "↓" : "↑"}
               </button>
             </div>
-            <div className="flex shrink-0 overflow-hidden rounded border border-neutral-700" role="group" aria-label="Layout">
+            <div className="flex h-7 shrink-0 overflow-hidden rounded border border-neutral-700" role="group" aria-label="Layout">
               {(["grid", "list"] as const).map((l) => (
                 <button
                   key={l}
                   onClick={() => setLayout(l)}
                   title={l === "grid" ? "Grid" : "List"}
                   aria-pressed={layout === l}
-                  className={`px-2 py-1 ${layout === l ? "bg-neutral-700 text-neutral-100" : "bg-neutral-950 text-neutral-500 hover:text-neutral-200"}`}
+                  className={`flex h-full w-8 items-center justify-center ${layout === l ? "bg-neutral-700 text-neutral-100" : "bg-neutral-950 text-neutral-500 hover:text-neutral-200"}`}
                 >
                   {l === "grid" ? (
                     <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor" aria-hidden>
@@ -835,7 +823,7 @@ export default function App() {
                 {selected.size > 0 && (
                   <button
                     onClick={actions.restore}
-                    className="shrink-0 rounded border border-neutral-700 px-2 py-0.5 text-xs text-neutral-200 hover:bg-neutral-800"
+                    className="h-7 shrink-0 rounded border border-neutral-700 px-2 text-xs text-neutral-200 hover:bg-neutral-800"
                   >
                     Put Back
                   </button>
@@ -843,7 +831,7 @@ export default function App() {
                 {selected.size > 0 && (
                   <button
                     onClick={actions.deleteFromDisk}
-                    className="shrink-0 rounded border border-red-900 px-2 py-0.5 text-xs text-red-300 hover:bg-red-950"
+                    className="h-7 shrink-0 rounded border border-red-900 px-2 text-xs text-red-300 hover:bg-red-950"
                   >
                     Delete Selected from Drive…
                   </button>
@@ -852,7 +840,7 @@ export default function App() {
                   disabled={trashTotal === 0}
                   onClick={emptyTrash}
                   title="Permanently delete every clip in the Trash from its drive"
-                  className="shrink-0 rounded border border-red-900 px-2 py-0.5 text-xs text-red-300 hover:bg-red-950 disabled:border-neutral-800 disabled:text-neutral-600 disabled:hover:bg-transparent"
+                  className="h-7 shrink-0 rounded border border-red-900 px-2 text-xs text-red-300 hover:bg-red-950 disabled:border-neutral-800 disabled:text-neutral-600 disabled:hover:bg-transparent"
                 >
                   Empty Trash…
                 </button>
@@ -913,8 +901,16 @@ export default function App() {
         </aside>
       </div>
       <DragGhost />
+      {showKeys && <ShortcutsHelp onClose={() => setShowKeys(false)} />}
       <footer className="flex h-7 shrink-0 items-center gap-4 border-t border-neutral-800 bg-neutral-900 px-3 text-xs text-neutral-400">
         <StatusLine status={status} error={error} />
+        <button
+          onClick={() => setShowKeys(true)}
+          title="Keyboard shortcuts (?)"
+          className="shrink-0 rounded border border-neutral-700 px-1.5 leading-4 text-neutral-400 hover:text-neutral-100"
+        >
+          ?
+        </button>
       </footer>
     </div>
   );
