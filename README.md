@@ -11,7 +11,7 @@ Needs ffmpeg from Homebrew (`brew install ffmpeg`).
 
 ## Landing page
 
-The download page is an Astro site in [site/](site). To deploy it on Vercel, import this repository and set the Root Directory to `site`; the defaults work. The version and download link live in `site/src/release.ts`.
+The download page is an Astro site in [site/](site). To deploy it on Vercel, import this repository and set the Root Directory to `site`; the defaults work. The download button always points at the newest GitHub release (`releases/latest/download/Shelf_universal.dmg`, a fixed-name copy the release workflow uploads), and the version label is read from the latest release, so a new release needs no site change.
 
 ```bash
 npm --prefix site install

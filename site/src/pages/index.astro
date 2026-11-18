@@ -2,7 +2,11 @@
 import "@fontsource-variable/bricolage-grotesque";
 import "@fontsource-variable/figtree";
 import Analytics from "@vercel/analytics/astro";
-import { version, repoUrl, downloadUrl } from "../release";
+import { latestVersion, repo, repoUrl, downloadUrl } from "../release";
+
+// Shown next to the download button. The link itself always serves the newest
+// release; a script below refreshes this label in case the site was built earlier.
+const version = await latestVersion();
 
 const clips = [
   { name: "Harbour at dusk", time: "0:42", stars: 5, sky: "#f2a65a", ground: "#2b4a5e" },
@@ -32,7 +36,7 @@ const features = [
     <title>Shelf, a media catalog for Mac that leaves your files alone</title>
     <meta
       name="description"
-      content="Shelf scans a folder or SSD, shows every clip as a thumbnail, and lets you name, tag, rate and group clips into albums. It never moves, renames or changes a file."
+      content="Shelf scans a folder or SSD, shows every clip as a thumbnail, and lets you name, tag, rate and group clips into albums. It never moves, renames or changes a file, and only deletes one when you empty its Trash."
     />
   </head>
   <body>
@@ -46,11 +50,11 @@ const features = [
         <h1>Your footage stays on the drive. Shelf keeps track of it.</h1>
         <p class="lede">
           Shelf is a Mac app that scans a folder or an SSD, shows every clip as a thumbnail, and lets
-          you name, tag, rate and group clips into albums. It never moves, renames or changes a file.
+          you name, tag, rate and group clips into albums. It never moves, renames or changes a file, and only deletes one when you empty its Trash.
         </p>
         <div class="cta">
           <a class="button" href={downloadUrl}>Download Shelf for Mac</a>
-          <p class="fine">Version {version}, for Apple Silicon and Intel Macs. Free. Needs ffmpeg, see <a href="#install">Install</a>.</p>
+          <p class="fine"><span data-version>{version ? `Version ${version}` : "Latest version"}</span>, for Apple Silicon and Intel Macs. Free. Needs ffmpeg, see <a href="#install">Install</a>.</p>
         </div>
       </section>
 
@@ -130,10 +134,23 @@ const features = [
     </main>
 
     <footer class="wrap bottom">
-      <span>Shelf {version}</span>
+      <span data-version-short>{version ? `Shelf ${version}` : "Shelf"}</span>
       <a href={repoUrl}>Source on GitHub</a>
       <a href={`${repoUrl}/issues`}>Report a problem</a>
     </footer>
+
+    <script is:inline define:vars={{ repo }}>
+      // Keep the version label current between site deploys.
+      fetch(`https://api.github.com/repos/${repo}/releases/latest`, { headers: { Accept: "application/vnd.github+json" } })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((release) => {
+          const v = release?.tag_name?.replace(/^v/, "");
+          if (!v) return;
+          document.querySelectorAll("[data-version]").forEach((el) => (el.textContent = `Version ${v}`));
+          document.querySelectorAll("[data-version-short]").forEach((el) => (el.textContent = `Shelf ${v}`));
+        })
+        .catch(() => {});
+    </script>
 
     <script>
       const demo = document.querySelector<HTMLElement>(".demo")!;
